@@ -35,7 +35,7 @@ var (
 	}
 
 	customUserAgentHeader = map[string]string{
-		"user-agent": "custome-user-agent",
+		"user-agent": "custom-user-agent",
 	}
 
 	customProxyHeader = map[string]string{
@@ -238,12 +238,15 @@ func TestTimeout(t *testing.T) {
 		assert.NoError(t, exporter.Shutdown(ctx))
 	}()
 	err = exporter.ExportSpans(ctx, otlptracetest.SingleReadOnlySpan())
-	assert.ErrorContains(t, err, "retry-able request failure")
+	assert.ErrorContains(t, err, "Client.Timeout exceeded while awaiting headers")
 }
 
 func TestNoRetry(t *testing.T) {
 	mc := runMockCollector(t, mockCollectorConfig{
 		InjectHTTPStatus: []int{http.StatusBadRequest},
+		Partial: &coltracepb.ExportTracePartialSuccess{
+			ErrorMessage: "missing required attribute aaa",
+		},
 	})
 	defer mc.MustStop(t)
 	driver := otlptracehttp.NewClient(
@@ -265,9 +268,14 @@ func TestNoRetry(t *testing.T) {
 	}()
 	err = exporter.ExportSpans(ctx, otlptracetest.SingleReadOnlySpan())
 	assert.Error(t, err)
-	unwrapped := errors.Unwrap(err)
-	assert.Equal(t, fmt.Sprintf("failed to send to http://%s/v1/traces: 400 Bad Request", mc.endpoint), unwrapped.Error())
 	assert.True(t, strings.HasPrefix(err.Error(), "traces export: "))
+
+	unwrapped := errors.Unwrap(err)
+	assert.Contains(t, unwrapped.Error(), fmt.Sprintf("failed to send to http://%s/v1/traces: 400 Bad Request", mc.endpoint))
+
+	unwrapped2 := errors.Unwrap(unwrapped)
+	assert.Contains(t, unwrapped2.Error(), "missing required attribute aaa")
+
 	assert.Empty(t, mc.GetSpans())
 }
 
@@ -412,7 +420,7 @@ func TestPartialSuccess(t *testing.T) {
 	err = exporter.ExportSpans(ctx, otlptracetest.SingleReadOnlySpan())
 	assert.NoError(t, err)
 
-	require.Equal(t, 1, len(errs))
+	require.Len(t, errs, 1)
 	require.Contains(t, errs[0].Error(), "partially successful")
 	require.Contains(t, errs[0].Error(), "2 spans rejected")
 }
@@ -443,7 +451,7 @@ func TestOtherHTTPSuccess(t *testing.T) {
 			err = exporter.ExportSpans(ctx, otlptracetest.SingleReadOnlySpan())
 			assert.NoError(t, err)
 
-			assert.Equal(t, 0, len(errs))
+			assert.Empty(t, errs)
 		})
 	}
 }

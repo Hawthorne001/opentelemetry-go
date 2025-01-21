@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/log/embedded"
 )
@@ -15,7 +16,12 @@ import (
 // instLib defines the instrumentation library a logger is created for.
 //
 // Do not use sdk/instrumentation (API cannot depend on the SDK).
-type instLib struct{ name, version, schemaURL string }
+type instLib struct {
+	name      string
+	version   string
+	schemaURL string
+	attrs     attribute.Set
+}
 
 type loggerProvider struct {
 	embedded.LoggerProvider
@@ -41,6 +47,7 @@ func (p *loggerProvider) Logger(name string, options ...log.LoggerOption) log.Lo
 		name:      name,
 		version:   cfg.InstrumentationVersion(),
 		schemaURL: cfg.SchemaURL(),
+		attrs:     cfg.InstrumentationAttributes(),
 	}
 
 	if p.loggers == nil {
@@ -87,10 +94,10 @@ func (l *logger) Emit(ctx context.Context, r log.Record) {
 	}
 }
 
-func (l *logger) Enabled(ctx context.Context, r log.Record) bool {
+func (l *logger) Enabled(ctx context.Context, param log.EnabledParameters) bool {
 	var enabled bool
 	if del, ok := l.delegate.Load().(log.Logger); ok {
-		enabled = del.Enabled(ctx, r)
+		enabled = del.Enabled(ctx, param)
 	}
 	return enabled
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/log/embedded"
 	"go.opentelemetry.io/otel/log/noop"
@@ -51,11 +52,12 @@ func TestLoggerConcurrentSafe(t *testing.T) {
 
 		ctx := context.Background()
 		var r log.Record
+		var param log.EnabledParameters
 
 		var enabled bool
 		for {
 			l.Emit(ctx, r)
-			enabled = l.Enabled(ctx, r)
+			enabled = l.Enabled(ctx, param)
 
 			select {
 			case <-stop:
@@ -103,16 +105,17 @@ type testLogger struct {
 }
 
 func (l *testLogger) Emit(context.Context, log.Record) { l.emitN++ }
-func (l *testLogger) Enabled(context.Context, log.Record) bool {
+func (l *testLogger) Enabled(context.Context, log.EnabledParameters) bool {
 	l.enabledN++
 	return true
 }
 
 func emitRecord(l log.Logger) {
 	ctx := context.Background()
+	var param log.EnabledParameters
 	var r log.Record
 
-	_ = l.Enabled(ctx, r)
+	_ = l.Enabled(ctx, param)
 	l.Emit(ctx, r)
 }
 
@@ -125,6 +128,9 @@ func TestDelegation(t *testing.T) {
 
 	alt := provider.Logger("alt")
 	assert.NotSame(t, pre0, alt)
+
+	alt2 := provider.Logger(preName, log.WithInstrumentationAttributes(attribute.String("k", "v")))
+	assert.NotSame(t, pre0, alt2)
 
 	delegate := &testLoggerProvider{}
 	provider.setDelegate(delegate)

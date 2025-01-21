@@ -346,9 +346,10 @@ func TestRecordAttrDeduplication(t *testing.T) {
 
 func TestApplyAttrLimitsDeduplication(t *testing.T) {
 	testcases := []struct {
-		name        string
-		limit       int
-		input, want log.Value
+		name             string
+		limit            int
+		input, want      log.Value
+		wantDroppedAttrs int
 	}{
 		{
 			// No de-duplication
@@ -419,6 +420,7 @@ func TestApplyAttrLimitsDeduplication(t *testing.T) {
 				log.String("g", "GG"),
 				log.String("h", "H"),
 			),
+			wantDroppedAttrs: 10,
 		},
 	}
 
@@ -431,11 +433,13 @@ func TestApplyAttrLimitsDeduplication(t *testing.T) {
 			t.Run("AddAttributes", func(t *testing.T) {
 				r.AddAttributes(kv)
 				assertKV(t, r, log.KeyValue{Key: key, Value: tc.want})
+				assert.Equal(t, tc.wantDroppedAttrs, r.DroppedAttributes())
 			})
 
 			t.Run("SetAttributes", func(t *testing.T) {
 				r.SetAttributes(kv)
 				assertKV(t, r, log.KeyValue{Key: key, Value: tc.want})
+				assert.Equal(t, tc.wantDroppedAttrs, r.DroppedAttributes())
 			})
 		})
 	}
@@ -566,72 +570,198 @@ func assertKV(t *testing.T, r Record, kv log.KeyValue) {
 }
 
 func TestTruncate(t *testing.T) {
-	testcases := []struct {
-		input, want string
-		limit       int
+	type group struct {
+		limit    int
+		input    string
+		expected string
+	}
+
+	tests := []struct {
+		name   string
+		groups []group
 	}{
+		// Edge case: limit is negative, no truncation should occur
 		{
-			input: "value",
-			want:  "value",
-			limit: -1,
+			name: "NoTruncation",
+			groups: []group{
+				{-1, "No truncation!", "No truncation!"},
+			},
 		},
+
+		// Edge case: string is already shorter than the limit, no truncation
+		// should occur
 		{
-			input: "value",
-			want:  "",
-			limit: 0,
+			name: "ShortText",
+			groups: []group{
+				{10, "Short text", "Short text"},
+				{15, "Short text", "Short text"},
+				{100, "Short text", "Short text"},
+			},
 		},
+
+		// Edge case: truncation happens with ASCII characters only
 		{
-			input: "value",
-			want:  "v",
-			limit: 1,
+			name: "ASCIIOnly",
+			groups: []group{
+				{1, "Hello World!", "H"},
+				{5, "Hello World!", "Hello"},
+				{12, "Hello World!", "Hello World!"},
+			},
 		},
+
+		// Truncation including multi-byte characters (UTF-8)
 		{
-			input: "value",
-			want:  "va",
-			limit: 2,
+			name: "ValidUTF-8",
+			groups: []group{
+				{7, "Hello, 世界", "Hello, "},
+				{8, "Hello, 世界", "Hello, 世"},
+				{2, "こんにちは", "こん"},
+				{3, "こんにちは", "こんに"},
+				{5, "こんにちは", "こんにちは"},
+				{12, "こんにちは", "こんにちは"},
+			},
 		},
+
+		// Truncation with invalid UTF-8 characters
 		{
-			input: "value",
-			want:  "val",
-			limit: 3,
+			name: "InvalidUTF-8",
+			groups: []group{
+				{11, "Invalid\x80text", "Invalidtext"},
+				// Do not modify invalid text if equal to limit.
+				{11, "Valid text\x80", "Valid text\x80"},
+				// Do not modify invalid text if under limit.
+				{15, "Valid text\x80", "Valid text\x80"},
+				{5, "Hello\x80World", "Hello"},
+				{11, "Hello\x80World\x80!", "HelloWorld!"},
+				{15, "Hello\x80World\x80Test", "HelloWorldTest"},
+				{15, "Hello\x80\x80\x80World\x80Test", "HelloWorldTest"},
+				{15, "\x80\x80\x80Hello\x80\x80\x80World\x80Test\x80\x80", "HelloWorldTest"},
+			},
 		},
+
+		// Truncation with mixed validn and invalid UTF-8 characters
 		{
-			input: "value",
-			want:  "valu",
-			limit: 4,
+			name: "MixedUTF-8",
+			groups: []group{
+				{6, "€"[0:2] + "hello€€", "hello€"},
+				{6, "€" + "€"[0:2] + "hello", "€hello"},
+				{11, "Valid text\x80📜", "Valid text📜"},
+				{11, "Valid text📜\x80", "Valid text📜"},
+				{14, "😊 Hello\x80World🌍🚀", "😊 HelloWorld🌍🚀"},
+				{14, "😊\x80 Hello\x80World🌍🚀", "😊 HelloWorld🌍🚀"},
+				{14, "😊\x80 Hello\x80World🌍\x80🚀", "😊 HelloWorld🌍🚀"},
+				{14, "😊\x80 Hello\x80World🌍\x80🚀\x80", "😊 HelloWorld🌍🚀"},
+				{14, "\x80😊\x80 Hello\x80World🌍\x80🚀\x80", "😊 HelloWorld🌍🚀"},
+			},
 		},
+
+		// Edge case: empty string, should return empty string
 		{
-			input: "value",
-			want:  "value",
-			limit: 5,
+			name: "Empty",
+			groups: []group{
+				{5, "", ""},
+			},
 		},
+
+		// Edge case: limit is 0, should return an empty string
 		{
-			input: "value",
-			want:  "value",
-			limit: 6,
-		},
-		{
-			input: "€€€€", // 3 bytes each
-			want:  "€€€",
-			limit: 10,
-		},
-		{
-			input: "€"[0:2] + "hello€€", // corrupted first rune, then over limit
-			want:  "hello€",
-			limit: 10,
-		},
-		{
-			input: "€"[0:2] + "hello", // corrupted first rune, then not over limit
-			want:  "hello",
-			limit: 10,
+			name: "Zero",
+			groups: []group{
+				{0, "Some text", ""},
+				{0, "", ""},
+			},
 		},
 	}
 
-	for _, tc := range testcases {
-		name := fmt.Sprintf("%s/%d", tc.input, tc.limit)
-		t.Run(name, func(t *testing.T) {
-			t.Log(tc.input, len(tc.input), tc.limit)
-			assert.Equal(t, tc.want, truncate(tc.input, tc.limit))
+	for _, tt := range tests {
+		for _, g := range tt.groups {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				got := truncate(g.limit, g.input)
+				assert.Equalf(
+					t, g.expected, got,
+					"input: %q([]rune%v))\ngot: %q([]rune%v)\nwant %q([]rune%v)",
+					g.input, []rune(g.input),
+					got, []rune(got),
+					g.expected, []rune(g.expected),
+				)
+			})
+		}
+	}
+}
+
+func BenchmarkTruncate(b *testing.B) {
+	run := func(limit int, input string) func(b *testing.B) {
+		return func(b *testing.B) {
+			b.ReportAllocs()
+			b.RunParallel(func(pb *testing.PB) {
+				var out string
+				for pb.Next() {
+					out = truncate(limit, input)
+				}
+				_ = out
+			})
+		}
+	}
+	b.Run("Unlimited", run(-1, "hello 😊 world 🌍🚀"))
+	b.Run("Zero", run(0, "Some text"))
+	b.Run("Short", run(10, "Short Text"))
+	b.Run("ASCII", run(5, "Hello, World!"))
+	b.Run("ValidUTF-8", run(10, "hello 😊 world 🌍🚀"))
+	b.Run("InvalidUTF-8", run(6, "€"[0:2]+"hello€€"))
+	b.Run("MixedUTF-8", run(14, "\x80😊\x80 Hello\x80World🌍\x80🚀\x80"))
+}
+
+func BenchmarkWalkAttributes(b *testing.B) {
+	for _, tt := range []struct {
+		attrCount int
+	}{
+		{attrCount: 1},
+		{attrCount: 10},
+		{attrCount: 100},
+		{attrCount: 1000},
+	} {
+		b.Run(fmt.Sprintf("%d attributes", tt.attrCount), func(b *testing.B) {
+			record := &Record{}
+			for i := 0; i < tt.attrCount; i++ {
+				record.SetAttributes(
+					log.String(fmt.Sprintf("key-%d", tt.attrCount), "value"),
+				)
+			}
+
+			b.ReportAllocs()
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				record.WalkAttributes(func(log.KeyValue) bool {
+					return true
+				})
+			}
 		})
 	}
+}
+
+func BenchmarkSetAddAttributes(b *testing.B) {
+	kv := log.String("key", "value")
+
+	b.Run("SetAttributes", func(b *testing.B) {
+		records := make([]Record, b.N)
+
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			records[i].SetAttributes(kv)
+		}
+	})
+
+	b.Run("AddAttributes", func(b *testing.B) {
+		records := make([]Record, b.N)
+
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			records[i].AddAttributes(kv)
+		}
+	})
 }

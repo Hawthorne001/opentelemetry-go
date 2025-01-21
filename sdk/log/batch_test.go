@@ -45,9 +45,8 @@ func TestEmptyBatchConfig(t *testing.T) {
 	assert.NotPanics(t, func() {
 		var bp BatchProcessor
 		ctx := context.Background()
-		var record Record
+		record := new(Record)
 		assert.NoError(t, bp.OnEmit(ctx, record), "OnEmit")
-		assert.False(t, bp.Enabled(ctx, record), "Enabled")
 		assert.NoError(t, bp.ForceFlush(ctx), "ForceFlush")
 		assert.NoError(t, bp.Shutdown(ctx), "Shutdown")
 	})
@@ -71,6 +70,7 @@ func TestNewBatchConfig(t *testing.T) {
 				expInterval:     newSetting(dfltExpInterval),
 				expTimeout:      newSetting(dfltExpTimeout),
 				expMaxBatchSize: newSetting(dfltExpMaxBatchSize),
+				expBufferSize:   newSetting(dfltExpBufferSize),
 			},
 		},
 		{
@@ -80,12 +80,14 @@ func TestNewBatchConfig(t *testing.T) {
 				WithExportInterval(time.Microsecond),
 				WithExportTimeout(time.Hour),
 				WithExportMaxBatchSize(2),
+				WithExportBufferSize(3),
 			},
 			want: batchConfig{
 				maxQSize:        newSetting(10),
 				expInterval:     newSetting(time.Microsecond),
 				expTimeout:      newSetting(time.Hour),
 				expMaxBatchSize: newSetting(2),
+				expBufferSize:   newSetting(3),
 			},
 		},
 		{
@@ -101,6 +103,7 @@ func TestNewBatchConfig(t *testing.T) {
 				expInterval:     newSetting(100 * time.Millisecond),
 				expTimeout:      newSetting(1000 * time.Millisecond),
 				expMaxBatchSize: newSetting(1),
+				expBufferSize:   newSetting(dfltExpBufferSize),
 			},
 		},
 		{
@@ -110,12 +113,14 @@ func TestNewBatchConfig(t *testing.T) {
 				WithExportInterval(-1 * time.Microsecond),
 				WithExportTimeout(-1 * time.Hour),
 				WithExportMaxBatchSize(-2),
+				WithExportBufferSize(-2),
 			},
 			want: batchConfig{
 				maxQSize:        newSetting(dfltMaxQSize),
 				expInterval:     newSetting(dfltExpInterval),
 				expTimeout:      newSetting(dfltExpTimeout),
 				expMaxBatchSize: newSetting(dfltExpMaxBatchSize),
+				expBufferSize:   newSetting(dfltExpBufferSize),
 			},
 		},
 		{
@@ -131,6 +136,7 @@ func TestNewBatchConfig(t *testing.T) {
 				expInterval:     newSetting(dfltExpInterval),
 				expTimeout:      newSetting(dfltExpTimeout),
 				expMaxBatchSize: newSetting(dfltExpMaxBatchSize),
+				expBufferSize:   newSetting(dfltExpBufferSize),
 			},
 		},
 		{
@@ -147,12 +153,14 @@ func TestNewBatchConfig(t *testing.T) {
 				WithExportInterval(time.Microsecond),
 				WithExportTimeout(time.Hour),
 				WithExportMaxBatchSize(2),
+				WithExportBufferSize(2),
 			},
 			want: batchConfig{
 				maxQSize:        newSetting(3),
 				expInterval:     newSetting(time.Microsecond),
 				expTimeout:      newSetting(time.Hour),
 				expMaxBatchSize: newSetting(2),
+				expBufferSize:   newSetting(2),
 			},
 		},
 		{
@@ -160,12 +168,14 @@ func TestNewBatchConfig(t *testing.T) {
 			options: []BatchProcessorOption{
 				WithMaxQueueSize(1),
 				WithExportMaxBatchSize(10),
+				WithExportBufferSize(3),
 			},
 			want: batchConfig{
 				maxQSize:        newSetting(1),
 				expInterval:     newSetting(dfltExpInterval),
 				expTimeout:      newSetting(dfltExpTimeout),
 				expMaxBatchSize: newSetting(1),
+				expBufferSize:   newSetting(3),
 			},
 		},
 	}
@@ -197,8 +207,8 @@ func TestBatchProcessor(t *testing.T) {
 			WithExportInterval(time.Nanosecond),
 			WithExportTimeout(time.Hour),
 		)
-		for _, r := range make([]Record, size) {
-			assert.NoError(t, b.OnEmit(ctx, r))
+		for i := 0; i < size; i++ {
+			assert.NoError(t, b.OnEmit(ctx, new(Record)))
 		}
 		var got []Record
 		assert.Eventually(t, func() bool {
@@ -220,8 +230,8 @@ func TestBatchProcessor(t *testing.T) {
 			WithExportInterval(time.Hour),
 			WithExportTimeout(time.Hour),
 		)
-		for _, r := range make([]Record, 10*batch) {
-			assert.NoError(t, b.OnEmit(ctx, r))
+		for i := 0; i < 10*batch; i++ {
+			assert.NoError(t, b.OnEmit(ctx, new(Record)))
 		}
 		assert.Eventually(t, func() bool {
 			return e.ExportN() > 1
@@ -243,8 +253,8 @@ func TestBatchProcessor(t *testing.T) {
 			WithExportInterval(time.Hour),
 			WithExportTimeout(time.Hour),
 		)
-		for _, r := range make([]Record, 2*batch) {
-			assert.NoError(t, b.OnEmit(ctx, r))
+		for i := 0; i < 2*batch; i++ {
+			assert.NoError(t, b.OnEmit(ctx, new(Record)))
 		}
 
 		var n int
@@ -255,7 +265,7 @@ func TestBatchProcessor(t *testing.T) {
 
 		var err error
 		require.Eventually(t, func() bool {
-			err = b.OnEmit(ctx, Record{})
+			err = b.OnEmit(ctx, new(Record))
 			return true
 		}, time.Second, time.Microsecond, "OnEmit blocked")
 		assert.NoError(t, err)
@@ -268,14 +278,6 @@ func TestBatchProcessor(t *testing.T) {
 		close(e.ExportTrigger)
 		assert.NoError(t, b.Shutdown(ctx))
 		assert.Equal(t, 3, e.ExportN())
-	})
-
-	t.Run("Enabled", func(t *testing.T) {
-		b := NewBatchProcessor(defaultNoopExporter)
-		assert.True(t, b.Enabled(ctx, Record{}))
-
-		_ = b.Shutdown(ctx)
-		assert.False(t, b.Enabled(ctx, Record{}))
 	})
 
 	t.Run("Shutdown", func(t *testing.T) {
@@ -303,7 +305,7 @@ func TestBatchProcessor(t *testing.T) {
 			assert.NoError(t, b.Shutdown(ctx))
 
 			want := e.ExportN()
-			assert.NoError(t, b.OnEmit(ctx, Record{}))
+			assert.NoError(t, b.OnEmit(ctx, new(Record)))
 			assert.Equal(t, want, e.ExportN(), "Export called after shutdown")
 		})
 
@@ -311,7 +313,7 @@ func TestBatchProcessor(t *testing.T) {
 			e := newTestExporter(nil)
 			b := NewBatchProcessor(e)
 
-			assert.NoError(t, b.OnEmit(ctx, Record{}))
+			assert.NoError(t, b.OnEmit(ctx, new(Record)))
 			assert.NoError(t, b.Shutdown(ctx))
 
 			assert.NoError(t, b.ForceFlush(ctx))
@@ -344,7 +346,7 @@ func TestBatchProcessor(t *testing.T) {
 			)
 			t.Cleanup(func() { _ = b.Shutdown(ctx) })
 
-			var r Record
+			r := new(Record)
 			r.SetBody(log.BoolValue(true))
 			require.NoError(t, b.OnEmit(ctx, r))
 
@@ -353,7 +355,7 @@ func TestBatchProcessor(t *testing.T) {
 			if assert.Equal(t, 1, e.ExportN(), "exporter Export calls") {
 				got := e.Records()
 				if assert.Len(t, got[0], 1, "records received") {
-					assert.Equal(t, r, got[0][0])
+					assert.Equal(t, *r, got[0][0])
 				}
 			}
 		})
@@ -381,7 +383,7 @@ func TestBatchProcessor(t *testing.T) {
 
 			// Enqueue 10 x "batch size" amount of records.
 			for i := 0; i < 10*batch; i++ {
-				require.NoError(t, b.OnEmit(ctx, Record{}))
+				require.NoError(t, b.OnEmit(ctx, new(Record)))
 			}
 			assert.Eventually(t, func() bool {
 				return e.ExportN() > 0 && len(b.exporter.input) == cap(b.exporter.input)
@@ -423,7 +425,7 @@ func TestBatchProcessor(t *testing.T) {
 			b := NewBatchProcessor(e)
 			t.Cleanup(func() { _ = b.Shutdown(ctx) })
 
-			var r Record
+			r := new(Record)
 			r.SetBody(log.BoolValue(true))
 			_ = b.OnEmit(ctx, r)
 			t.Cleanup(func() { _ = b.Shutdown(ctx) })
@@ -453,7 +455,7 @@ func TestBatchProcessor(t *testing.T) {
 			WithExportInterval(time.Hour),
 			WithExportTimeout(time.Hour),
 		)
-		var r Record
+		r := new(Record)
 		// First record will be blocked by testExporter.Export
 		assert.NoError(t, b.OnEmit(ctx, r), "exported record")
 		require.Eventually(t, func() bool {
@@ -497,7 +499,7 @@ func TestBatchProcessor(t *testing.T) {
 					case <-ctx.Done():
 						return
 					default:
-						assert.NoError(t, b.OnEmit(ctx, Record{}))
+						assert.NoError(t, b.OnEmit(ctx, new(Record)))
 						// Ignore partial flush errors.
 						_ = b.ForceFlush(ctx)
 					}
@@ -527,7 +529,7 @@ func TestQueue(t *testing.T) {
 	t.Run("newQueue", func(t *testing.T) {
 		const size = 1
 		q := newQueue(size)
-		assert.Equal(t, q.len, 0)
+		assert.Equal(t, 0, q.len)
 		assert.Equal(t, size, q.cap, "capacity")
 		assert.Equal(t, size, q.read.Len(), "read ring")
 		assert.Same(t, q.read, q.write, "different rings")
@@ -642,7 +644,7 @@ func TestQueue(t *testing.T) {
 }
 
 func BenchmarkBatchProcessorOnEmit(b *testing.B) {
-	var r Record
+	r := new(Record)
 	body := log.BoolValue(true)
 	r.SetBody(body)
 

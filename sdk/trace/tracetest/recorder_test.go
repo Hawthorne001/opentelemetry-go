@@ -22,7 +22,7 @@ func TestSpanRecorderOnStartAppends(t *testing.T) {
 	ctx := context.Background()
 	sr := new(SpanRecorder)
 
-	assert.Len(t, sr.started, 0)
+	assert.Empty(t, sr.started)
 	sr.OnStart(ctx, s0)
 	assert.Len(t, sr.started, 1)
 	sr.OnStart(ctx, s1)
@@ -42,7 +42,7 @@ func TestSpanRecorderOnEndAppends(t *testing.T) {
 	s0, s1 := new(roSpan), new(roSpan)
 	sr := new(SpanRecorder)
 
-	assert.Len(t, sr.ended, 0)
+	assert.Empty(t, sr.ended)
 	sr.OnEnd(s0)
 	assert.Len(t, sr.ended, 1)
 	sr.OnEnd(s1)
@@ -111,4 +111,28 @@ func TestStartingConcurrentSafe(t *testing.T) {
 	)
 
 	assert.Len(t, sr.Started(), 2)
+}
+
+func TestResetConcurrentSafe(t *testing.T) {
+	sr := NewSpanRecorder()
+	ctx := context.Background()
+
+	runConcurrently(
+		func() { sr.OnStart(ctx, new(rwSpan)) },
+		func() { sr.OnStart(ctx, new(rwSpan)) },
+		func() { sr.OnEnd(new(roSpan)) },
+		func() { sr.OnEnd(new(roSpan)) },
+	)
+
+	assert.Len(t, sr.Started(), 2)
+	assert.Len(t, sr.Ended(), 2)
+
+	runConcurrently(
+		func() { sr.Reset() },
+		func() { sr.Reset() },
+		func() { sr.Reset() },
+	)
+
+	assert.Empty(t, sr.Started())
+	assert.Empty(t, sr.Ended())
 }

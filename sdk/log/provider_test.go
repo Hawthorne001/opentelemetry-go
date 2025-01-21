@@ -5,21 +5,28 @@ package log // import "go.opentelemetry.io/otel/sdk/log"
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"sync"
 	"testing"
 
 	"github.com/go-logr/logr"
 	"github.com/go-logr/logr/testr"
+	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/internal/global"
+	"go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/log/noop"
+	ottest "go.opentelemetry.io/otel/sdk/internal/internaltest"
+	"go.opentelemetry.io/otel/sdk/log/internal/x"
 	"go.opentelemetry.io/otel/sdk/resource"
 )
+
+const envVarResourceAttributes = "OTEL_RESOURCE_ATTRIBUTES"
 
 type processor struct {
 	Name string
@@ -29,24 +36,19 @@ type processor struct {
 	forceFlushCalls int
 
 	records []Record
-	enabled bool
 }
 
 func newProcessor(name string) *processor {
-	return &processor{Name: name, enabled: true}
+	return &processor{Name: name}
 }
 
-func (p *processor) OnEmit(ctx context.Context, r Record) error {
+func (p *processor) OnEmit(ctx context.Context, r *Record) error {
 	if p.Err != nil {
 		return p.Err
 	}
 
-	p.records = append(p.records, r)
+	p.records = append(p.records, *r)
 	return nil
-}
-
-func (p *processor) Enabled(context.Context, Record) bool {
-	return p.enabled
 }
 
 func (p *processor) Shutdown(context.Context) error {
@@ -57,6 +59,25 @@ func (p *processor) Shutdown(context.Context) error {
 func (p *processor) ForceFlush(context.Context) error {
 	p.forceFlushCalls++
 	return p.Err
+}
+
+type fltrProcessor struct {
+	*processor
+
+	enabled bool
+}
+
+var _ x.FilterProcessor = (*fltrProcessor)(nil)
+
+func newFltrProcessor(name string, enabled bool) *fltrProcessor {
+	return &fltrProcessor{
+		processor: newProcessor(name),
+		enabled:   enabled,
+	}
+}
+
+func (p *fltrProcessor) Enabled(context.Context, log.EnabledParameters) bool {
+	return p.enabled
 }
 
 func TestNewLoggerProviderConfiguration(t *testing.T) {
@@ -155,6 +176,65 @@ func TestNewLoggerProviderConfiguration(t *testing.T) {
 	}
 }
 
+func mergeResource(t *testing.T, r1, r2 *resource.Resource) *resource.Resource {
+	r, err := resource.Merge(r1, r2)
+	assert.NoError(t, err)
+	return r
+}
+
+func TestWithResource(t *testing.T) {
+	store, err := ottest.SetEnvVariables(map[string]string{
+		envVarResourceAttributes: "key=value,rk5=7",
+	})
+	require.NoError(t, err)
+	defer func() { require.NoError(t, store.Restore()) }()
+
+	cases := []struct {
+		name    string
+		options []LoggerProviderOption
+		want    *resource.Resource
+		msg     string
+	}{
+		{
+			name:    "explicitly empty resource",
+			options: []LoggerProviderOption{WithResource(resource.Empty())},
+			want:    resource.Environment(),
+		},
+		{
+			name:    "uses default if no resource option",
+			options: []LoggerProviderOption{},
+			want:    resource.Default(),
+		},
+		{
+			name:    "explicit resource",
+			options: []LoggerProviderOption{WithResource(resource.NewSchemaless(attribute.String("rk1", "rv1"), attribute.Int64("rk2", 5)))},
+			want:    mergeResource(t, resource.Environment(), resource.NewSchemaless(attribute.String("rk1", "rv1"), attribute.Int64("rk2", 5))),
+		},
+		{
+			name: "last resource wins",
+			options: []LoggerProviderOption{
+				WithResource(resource.NewSchemaless(attribute.String("rk1", "vk1"), attribute.Int64("rk2", 5))),
+				WithResource(resource.NewSchemaless(attribute.String("rk3", "rv3"), attribute.Int64("rk4", 10))),
+			},
+			want: mergeResource(t, resource.Environment(), resource.NewSchemaless(attribute.String("rk3", "rv3"), attribute.Int64("rk4", 10))),
+		},
+		{
+			name:    "overlapping attributes with environment resource",
+			options: []LoggerProviderOption{WithResource(resource.NewSchemaless(attribute.String("rk1", "rv1"), attribute.Int64("rk5", 10)))},
+			want:    mergeResource(t, resource.Environment(), resource.NewSchemaless(attribute.String("rk1", "rv1"), attribute.Int64("rk5", 10))),
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got := newProviderConfig(tc.options).resource
+			if diff := cmp.Diff(got, tc.want); diff != "" {
+				t.Errorf("WithResource:\n  -got +want %s", diff)
+			}
+		})
+	}
+}
+
 func TestLoggerProviderConcurrentSafe(t *testing.T) {
 	const goRoutineN = 10
 
@@ -189,7 +269,7 @@ func (l *logSink) Enabled(int) bool { return true }
 
 func (l *logSink) Info(level int, msg string, keysAndValues ...any) {
 	l.level, l.msg, l.keysAndValues = level, msg, keysAndValues
-	l.LogSink.Info(level, msg, keysAndValues)
+	l.LogSink.Info(level, msg, keysAndValues...)
 }
 
 func TestLoggerProviderLogger(t *testing.T) {
@@ -220,11 +300,15 @@ func TestLoggerProviderLogger(t *testing.T) {
 	t.Run("SameLoggers", func(t *testing.T) {
 		p := NewLoggerProvider()
 
-		l0, l1 := p.Logger("l0"), p.Logger("l1")
-		l2, l3 := p.Logger("l0"), p.Logger("l1")
+		l0, l1, l2 := p.Logger("l0"), p.Logger("l1"), p.Logger("l0", log.WithInstrumentationAttributes(attribute.String("foo", "bar")))
+		assert.NotSame(t, l0, l1)
+		assert.NotSame(t, l0, l2)
+		assert.NotSame(t, l1, l2)
 
-		assert.Same(t, l0, l2)
-		assert.Same(t, l1, l3)
+		l3, l4, l5 := p.Logger("l0"), p.Logger("l1"), p.Logger("l0", log.WithInstrumentationAttributes(attribute.String("foo", "bar")))
+		assert.Same(t, l0, l3)
+		assert.Same(t, l1, l4)
+		assert.Same(t, l2, l5)
 	})
 }
 
@@ -286,4 +370,23 @@ func TestLoggerProviderForceFlush(t *testing.T) {
 		ctx := context.Background()
 		assert.ErrorIs(t, p.ForceFlush(ctx), assert.AnError, "processor error not returned")
 	})
+}
+
+func BenchmarkLoggerProviderLogger(b *testing.B) {
+	p := NewLoggerProvider()
+	names := make([]string, b.N)
+	for i := 0; i < b.N; i++ {
+		names[i] = fmt.Sprintf("%d logger", i)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	loggers := make([]log.Logger, b.N)
+	for i := 0; i < b.N; i++ {
+		loggers[i] = p.Logger(names[i])
+	}
+
+	b.StopTimer()
+	loggers[0].Enabled(context.Background(), log.EnabledParameters{})
 }

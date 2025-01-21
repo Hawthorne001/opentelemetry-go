@@ -43,7 +43,7 @@ func testExpoHistogramDataPointRecord[N int64 | float64](t *testing.T) {
 		maxSize         int
 		values          []N
 		expectedBuckets expoBuckets
-		expectedScale   int
+		expectedScale   int32
 	}{
 		{
 			maxSize: 4,
@@ -180,7 +180,7 @@ func testExpoHistogramMinMaxSumInt64(t *testing.T) {
 
 			assert.Equal(t, tt.expected.max, dp.max)
 			assert.Equal(t, tt.expected.min, dp.min)
-			assert.Equal(t, tt.expected.sum, dp.sum)
+			assert.InDelta(t, tt.expected.sum, dp.sum, 0.01)
 		})
 	}
 }
@@ -222,7 +222,7 @@ func testExpoHistogramMinMaxSumFloat64(t *testing.T) {
 
 			assert.Equal(t, tt.expected.max, dp.max)
 			assert.Equal(t, tt.expected.min, dp.min)
-			assert.Equal(t, tt.expected.sum, dp.sum)
+			assert.InDelta(t, tt.expected.sum, dp.sum, 0.01)
 		})
 	}
 }
@@ -232,7 +232,7 @@ func testExpoHistogramDataPointRecordFloat64(t *testing.T) {
 		maxSize         int
 		values          []float64
 		expectedBuckets expoBuckets
-		expectedScale   int
+		expectedScale   int32
 	}
 
 	testCases := []TestCase{
@@ -348,7 +348,7 @@ func TestExpoBucketDownscale(t *testing.T) {
 	tests := []struct {
 		name   string
 		bucket *expoBuckets
-		scale  int
+		scale  int32
 		want   *expoBuckets
 	}{
 		{
@@ -503,7 +503,7 @@ func TestExpoBucketRecord(t *testing.T) {
 	tests := []struct {
 		name   string
 		bucket *expoBuckets
-		bin    int
+		bin    int32
 		want   *expoBuckets
 	}{
 		{
@@ -563,15 +563,15 @@ func TestExpoBucketRecord(t *testing.T) {
 
 func TestScaleChange(t *testing.T) {
 	type args struct {
-		bin      int
-		startBin int
+		bin      int32
+		startBin int32
 		length   int
 		maxSize  int
 	}
 	tests := []struct {
 		name string
 		args args
-		want int
+		want int32
 	}{
 		{
 			name: "if length is 0, no rescale is needed",
@@ -778,7 +778,7 @@ func testDeltaExpoHist[N int64 | float64]() func(t *testing.T) {
 						{
 							Attributes: fltrAlice,
 							StartTime:  y2kPlus(1),
-							Time:       y2kPlus(9),
+							Time:       y2kPlus(2),
 							Count:      7,
 							Min:        metricdata.NewExtrema[N](-1),
 							Max:        metricdata.NewExtrema[N](16),
@@ -832,8 +832,8 @@ func testDeltaExpoHist[N int64 | float64]() func(t *testing.T) {
 					DataPoints: []metricdata.ExponentialHistogramDataPoint[N]{
 						{
 							Attributes: fltrAlice,
-							StartTime:  y2kPlus(10),
-							Time:       y2kPlus(24),
+							StartTime:  y2kPlus(3),
+							Time:       y2kPlus(4),
 							Count:      7,
 							Min:        metricdata.NewExtrema[N](-1),
 							Max:        metricdata.NewExtrema[N](16),
@@ -850,8 +850,8 @@ func testDeltaExpoHist[N int64 | float64]() func(t *testing.T) {
 						},
 						{
 							Attributes: overflowSet,
-							StartTime:  y2kPlus(10),
-							Time:       y2kPlus(24),
+							StartTime:  y2kPlus(3),
+							Time:       y2kPlus(4),
 							Count:      6,
 							Min:        metricdata.NewExtrema[N](1),
 							Max:        metricdata.NewExtrema[N](16),
@@ -905,7 +905,7 @@ func testCumulativeExpoHist[N int64 | float64]() func(t *testing.T) {
 						{
 							Attributes: fltrAlice,
 							StartTime:  y2kPlus(0),
-							Time:       y2kPlus(9),
+							Time:       y2kPlus(2),
 							Count:      7,
 							Min:        metricdata.NewExtrema[N](-1),
 							Max:        metricdata.NewExtrema[N](16),
@@ -938,7 +938,7 @@ func testCumulativeExpoHist[N int64 | float64]() func(t *testing.T) {
 						{
 							Attributes: fltrAlice,
 							StartTime:  y2kPlus(0),
-							Time:       y2kPlus(13),
+							Time:       y2kPlus(3),
 							Count:      10,
 							Min:        metricdata.NewExtrema[N](-1),
 							Max:        metricdata.NewExtrema[N](16),
@@ -967,7 +967,7 @@ func testCumulativeExpoHist[N int64 | float64]() func(t *testing.T) {
 						{
 							Attributes: fltrAlice,
 							StartTime:  y2kPlus(0),
-							Time:       y2kPlus(14),
+							Time:       y2kPlus(4),
 							Count:      10,
 							Min:        metricdata.NewExtrema[N](-1),
 							Max:        metricdata.NewExtrema[N](16),
@@ -1004,7 +1004,7 @@ func testCumulativeExpoHist[N int64 | float64]() func(t *testing.T) {
 						{
 							Attributes: fltrAlice,
 							StartTime:  y2kPlus(0),
-							Time:       y2kPlus(21),
+							Time:       y2kPlus(5),
 							Count:      10,
 							Min:        metricdata.NewExtrema[N](-1),
 							Max:        metricdata.NewExtrema[N](16),
@@ -1022,7 +1022,7 @@ func testCumulativeExpoHist[N int64 | float64]() func(t *testing.T) {
 						{
 							Attributes: overflowSet,
 							StartTime:  y2kPlus(0),
-							Time:       y2kPlus(21),
+							Time:       y2kPlus(5),
 							Count:      6,
 							Min:        metricdata.NewExtrema[N](1),
 							Max:        metricdata.NewExtrema[N](16),
@@ -1050,7 +1050,7 @@ func FuzzGetBin(f *testing.F) {
 		0x1.0000000000001p300,
 		0x1.fffffffffffffp299,
 	}
-	scales := []int{0, 15, -5}
+	scales := []int32{0, 15, -5}
 
 	for _, s := range scales {
 		for _, v := range values {
@@ -1058,7 +1058,7 @@ func FuzzGetBin(f *testing.F) {
 		}
 	}
 
-	f.Fuzz(func(t *testing.T, v float64, scale int) {
+	f.Fuzz(func(t *testing.T, v float64, scale int32) {
 		// GetBin only works on positive values.
 		if math.Signbit(v) {
 			v = v * -1
@@ -1081,10 +1081,10 @@ func FuzzGetBin(f *testing.F) {
 	})
 }
 
-func lowerBound(index int, scale int) float64 {
+func lowerBound(index, scale int32) float64 {
 	// The lowerBound of the index of Math.SmallestNonzeroFloat64 at any scale
 	// is always rounded down to 0.0.
 	// For example lowerBound(getBin(Math.SmallestNonzeroFloat64, 7), 7) == 0.0
 	// 2 ^ (index * 2 ^ (-scale))
-	return math.Exp2(math.Ldexp(float64(index), -scale))
+	return math.Exp2(math.Ldexp(float64(index), -int(scale)))
 }

@@ -21,7 +21,7 @@ import (
 	"go.opentelemetry.io/otel/sdk"
 	ottest "go.opentelemetry.io/otel/sdk/internal/internaltest"
 	"go.opentelemetry.io/otel/sdk/resource"
-	semconv "go.opentelemetry.io/otel/semconv/v1.25.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
 
 var (
@@ -299,7 +299,7 @@ func TestMarshalJSON(t *testing.T) {
 	r := resource.NewSchemaless(attribute.Int64("A", 1), attribute.String("C", "D"))
 	data, err := json.Marshal(r)
 	require.NoError(t, err)
-	require.Equal(t,
+	require.JSONEq(t,
 		`[{"Key":"A","Value":{"Type":"INT64","Value":1}},{"Key":"C","Value":{"Type":"STRING","Value":"D"}}]`,
 		string(data))
 }
@@ -452,7 +452,7 @@ func TestNew(t *testing.T) {
 	}
 }
 
-func TestNewWrapedError(t *testing.T) {
+func TestNewWrappedError(t *testing.T) {
 	localErr := errors.New("local error")
 	_, err := resource.New(
 		context.Background(),

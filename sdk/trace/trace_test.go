@@ -25,7 +25,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/instrumentation"
 	ottest "go.opentelemetry.io/otel/sdk/internal/internaltest"
 	"go.opentelemetry.io/otel/sdk/resource"
-	semconv "go.opentelemetry.io/otel/semconv/v1.25.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -216,7 +216,7 @@ func TestSpanIsRecording(t *testing.T) {
 			_, span := tp.Tracer(name).Start(context.Background(), "StartSpan")
 			got := span.IsRecording()
 			span.End()
-			assert.Equal(t, got, tc.want, name)
+			assert.Equal(t, tc.want, got, name)
 		}
 	})
 
@@ -900,7 +900,11 @@ func cmpDiff(x, y interface{}) string {
 		cmp.AllowUnexported(snapshot{}),
 		cmp.AllowUnexported(attribute.Value{}),
 		cmp.AllowUnexported(Event{}),
-		cmp.AllowUnexported(trace.TraceState{}))
+		cmp.AllowUnexported(trace.TraceState{}),
+		cmp.Comparer(func(x, y attribute.Set) bool {
+			return x.Equals(&y)
+		}),
+	)
 }
 
 // checkChild is test utility function that tests that c has fields set appropriately,
@@ -1286,11 +1290,11 @@ func TestRecordErrorWithStackTrace(t *testing.T) {
 		instrumentationScope: instrumentation.Scope{Name: "RecordError"},
 	}
 
-	assert.Equal(t, got.spanContext, want.spanContext)
-	assert.Equal(t, got.parent, want.parent)
-	assert.Equal(t, got.name, want.name)
-	assert.Equal(t, got.status, want.status)
-	assert.Equal(t, got.spanKind, want.spanKind)
+	assert.Equal(t, want.spanContext, got.spanContext)
+	assert.Equal(t, want.parent, got.parent)
+	assert.Equal(t, want.name, got.name)
+	assert.Equal(t, want.status, got.status)
+	assert.Equal(t, want.spanKind, got.spanKind)
 	assert.Equal(t, got.events[0].Attributes[0].Value.AsString(), want.events[0].Attributes[0].Value.AsString())
 	assert.Equal(t, got.events[0].Attributes[1].Value.AsString(), want.events[0].Attributes[1].Value.AsString())
 	gotStackTraceFunctionName := strings.Split(got.events[0].Attributes[2].Value.AsString(), "\n")
@@ -1500,11 +1504,11 @@ func TestSpanCapturesPanic(t *testing.T) {
 	spans := te.Spans()
 	require.Len(t, spans, 1)
 	require.Len(t, spans[0].Events(), 1)
-	assert.Equal(t, spans[0].Events()[0].Name, semconv.ExceptionEventName)
-	assert.Equal(t, spans[0].Events()[0].Attributes, []attribute.KeyValue{
+	assert.Equal(t, semconv.ExceptionEventName, spans[0].Events()[0].Name)
+	assert.Equal(t, []attribute.KeyValue{
 		semconv.ExceptionType("*errors.errorString"),
 		semconv.ExceptionMessage("error message"),
-	})
+	}, spans[0].Events()[0].Attributes)
 }
 
 func TestSpanCapturesPanicWithStackTrace(t *testing.T) {
@@ -1523,9 +1527,9 @@ func TestSpanCapturesPanicWithStackTrace(t *testing.T) {
 	spans := te.Spans()
 	require.Len(t, spans, 1)
 	require.Len(t, spans[0].Events(), 1)
-	assert.Equal(t, spans[0].Events()[0].Name, semconv.ExceptionEventName)
-	assert.Equal(t, spans[0].Events()[0].Attributes[0].Value.AsString(), "*errors.errorString")
-	assert.Equal(t, spans[0].Events()[0].Attributes[1].Value.AsString(), "error message")
+	assert.Equal(t, semconv.ExceptionEventName, spans[0].Events()[0].Name)
+	assert.Equal(t, "*errors.errorString", spans[0].Events()[0].Attributes[0].Value.AsString())
+	assert.Equal(t, "error message", spans[0].Events()[0].Attributes[1].Value.AsString())
 
 	gotStackTraceFunctionName := strings.Split(spans[0].Events()[0].Attributes[2].Value.AsString(), "\n")
 	assert.Truef(t, strings.HasPrefix(gotStackTraceFunctionName[1], "go.opentelemetry.io/otel/sdk/trace.recordStackTrace"), "%q not prefixed with go.opentelemetry.io/otel/sdk/trace.recordStackTrace", gotStackTraceFunctionName[1])
@@ -2105,5 +2109,55 @@ func TestAddLinkToNonRecordingSpan(t *testing.T) {
 
 	if diff := cmpDiff(got, want); diff != "" {
 		t.Errorf("AddLinkToNonRecordingSpan: -got +want %s", diff)
+	}
+}
+
+func BenchmarkTraceStart(b *testing.B) {
+	tracer := NewTracerProvider().Tracer("")
+	ctx := trace.ContextWithSpanContext(context.Background(), trace.SpanContext{})
+
+	l1 := trace.Link{SpanContext: trace.SpanContext{}, Attributes: []attribute.KeyValue{}}
+	l2 := trace.Link{SpanContext: trace.SpanContext{}, Attributes: []attribute.KeyValue{}}
+
+	links := []trace.Link{l1, l2}
+
+	for _, tt := range []struct {
+		name    string
+		options []trace.SpanStartOption
+	}{
+		{
+			name: "with a simple span",
+		},
+		{
+			name: "with several links",
+			options: []trace.SpanStartOption{
+				trace.WithLinks(links...),
+			},
+		},
+		{
+			name: "with attributes",
+			options: []trace.SpanStartOption{
+				trace.WithAttributes(
+					attribute.String("key1", "value1"),
+					attribute.String("key2", "value2"),
+				),
+			},
+		},
+	} {
+		b.Run(tt.name, func(b *testing.B) {
+			spans := make([]trace.Span, b.N)
+			b.ReportAllocs()
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				_, span := tracer.Start(ctx, "", tt.options...)
+				spans[i] = span
+			}
+
+			b.StopTimer()
+			for i := 0; i < b.N; i++ {
+				spans[i].End()
+			}
+		})
 	}
 }

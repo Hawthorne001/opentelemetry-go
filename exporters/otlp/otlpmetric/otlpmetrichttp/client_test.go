@@ -124,7 +124,7 @@ func TestConfig(t *testing.T) {
 		got := coll.Headers()
 		require.Regexp(t, "OTel Go OTLP over HTTP/protobuf metrics exporter/[01]\\..*", got)
 		require.Contains(t, got, key)
-		assert.Equal(t, got[key], []string{headers[key]})
+		assert.Equal(t, []string{headers[key]}, got[key])
 	})
 
 	t.Run("WithTimeout", func(t *testing.T) {
@@ -189,7 +189,31 @@ func TestConfig(t *testing.T) {
 		t.Cleanup(func() { close(rCh) })
 		t.Cleanup(func() { require.NoError(t, exp.Shutdown(ctx)) })
 		assert.NoError(t, exp.Export(ctx, &metricdata.ResourceMetrics{}), "failed retry")
-		assert.Len(t, rCh, 0, "failed HTTP responses did not occur")
+		assert.Empty(t, rCh, "failed HTTP responses did not occur")
+	})
+
+	t.Run("WithRetryAndExporterErr", func(t *testing.T) {
+		exporterErr := errors.New("rpc error: code = Unavailable desc = service.name not found in resource attributes")
+		rCh := make(chan otest.ExportResult, 1)
+		rCh <- otest.ExportResult{Err: &otest.HTTPResponseError{
+			Status: http.StatusTooManyRequests,
+			Err:    exporterErr,
+		}}
+		exp, coll := factoryFunc("", rCh, WithRetry(RetryConfig{
+			Enabled: false,
+		}))
+		ctx := context.Background()
+		t.Cleanup(func() { require.NoError(t, coll.Shutdown(ctx)) })
+		// Push this after Shutdown so the HTTP server doesn't hang.
+		t.Cleanup(func() { close(rCh) })
+		t.Cleanup(func() { require.NoError(t, exp.Shutdown(ctx)) })
+		err := exp.Export(ctx, &metricdata.ResourceMetrics{})
+		assert.ErrorContains(t, err, exporterErr.Error())
+
+		// To test the `Unwrap` and `As` function of retryable error
+		var retryErr *retryableError
+		assert.ErrorAs(t, err, &retryErr)
+		assert.ErrorIs(t, err, *retryErr)
 	})
 
 	t.Run("WithURLPath", func(t *testing.T) {
@@ -226,7 +250,7 @@ func TestConfig(t *testing.T) {
 
 		got := coll.Headers()
 		require.Contains(t, got, key)
-		assert.Equal(t, got[key], []string{headers[key]})
+		assert.Equal(t, []string{headers[key]}, got[key])
 	})
 
 	t.Run("WithProxy", func(t *testing.T) {
@@ -244,6 +268,27 @@ func TestConfig(t *testing.T) {
 
 		got := coll.Headers()
 		require.Contains(t, got, headerKeySetInProxy)
-		assert.Equal(t, got[headerKeySetInProxy], []string{headerValueSetInProxy})
+		assert.Equal(t, []string{headerValueSetInProxy}, got[headerKeySetInProxy])
+	})
+
+	t.Run("non-retryable errors are propagated", func(t *testing.T) {
+		exporterErr := errors.New("missing required attribute aaa")
+		rCh := make(chan otest.ExportResult, 1)
+		rCh <- otest.ExportResult{Err: &otest.HTTPResponseError{
+			Status: http.StatusBadRequest,
+			Err:    exporterErr,
+		}}
+		exp, coll := factoryFunc("", rCh)
+		ctx := context.Background()
+		t.Cleanup(func() { require.NoError(t, coll.Shutdown(ctx)) })
+		// Push this after Shutdown so the HTTP server doesn't hang.
+		t.Cleanup(func() { close(rCh) })
+		t.Cleanup(func() { require.NoError(t, exp.Shutdown(ctx)) })
+		exCtx, cancel := context.WithTimeout(ctx, time.Second)
+		defer cancel()
+		err := exp.Export(exCtx, &metricdata.ResourceMetrics{})
+		assert.ErrorContains(t, err, exporterErr.Error())
+
+		assert.NoError(t, exCtx.Err())
 	})
 }

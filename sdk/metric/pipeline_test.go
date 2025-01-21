@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/go-logr/logr"
@@ -23,6 +24,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/sdk/instrumentation"
+	"go.opentelemetry.io/otel/sdk/metric/exemplar"
+	"go.opentelemetry.io/otel/sdk/metric/internal/aggregate"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata/metricdatatest"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -39,13 +42,13 @@ func testSumAggregateOutput(dest *metricdata.Aggregation) int {
 }
 
 func TestNewPipeline(t *testing.T) {
-	pipe := newPipeline(nil, nil, nil)
+	pipe := newPipeline(nil, nil, nil, exemplar.AlwaysOffFilter)
 
 	output := metricdata.ResourceMetrics{}
 	err := pipe.produce(context.Background(), &output)
 	require.NoError(t, err)
 	assert.Equal(t, resource.Empty(), output.Resource)
-	assert.Len(t, output.ScopeMetrics, 0)
+	assert.Empty(t, output.ScopeMetrics)
 
 	iSync := instrumentSync{"name", "desc", "1", testSumAggregateOutput}
 	assert.NotPanics(t, func() {
@@ -65,7 +68,7 @@ func TestNewPipeline(t *testing.T) {
 
 func TestPipelineUsesResource(t *testing.T) {
 	res := resource.NewWithAttributes("noSchema", attribute.String("test", "resource"))
-	pipe := newPipeline(res, nil, nil)
+	pipe := newPipeline(res, nil, nil, exemplar.AlwaysOffFilter)
 
 	output := metricdata.ResourceMetrics{}
 	err := pipe.produce(context.Background(), &output)
@@ -74,7 +77,7 @@ func TestPipelineUsesResource(t *testing.T) {
 }
 
 func TestPipelineConcurrentSafe(t *testing.T) {
-	pipe := newPipeline(nil, nil, nil)
+	pipe := newPipeline(nil, nil, nil, exemplar.AlwaysOffFilter)
 	ctx := context.Background()
 	var output metricdata.ResourceMetrics
 
@@ -100,6 +103,21 @@ func TestPipelineConcurrentSafe(t *testing.T) {
 			defer wg.Done()
 			pipe.addMultiCallback(func(context.Context) error { return nil })
 		}()
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			b := aggregate.Builder[int64]{
+				Temporality:      metricdata.CumulativeTemporality,
+				ReservoirFunc:    nil,
+				AggregationLimit: 0,
+			}
+			var oID observableID[int64]
+			m, _ := b.PrecomputedSum(false)
+			measures := []aggregate.Measure[int64]{}
+			measures = append(measures, m)
+			pipe.addInt64Measure(oID, measures)
+		}()
 	}
 	wg.Wait()
 }
@@ -124,13 +142,13 @@ func testDefaultViewImplicit[N int64 | float64]() func(t *testing.T) {
 		}{
 			{
 				name: "NoView",
-				pipe: newPipeline(nil, reader, nil),
+				pipe: newPipeline(nil, reader, nil, exemplar.AlwaysOffFilter),
 			},
 			{
 				name: "NoMatchingView",
 				pipe: newPipeline(nil, reader, []View{
 					NewView(Instrument{Name: "foo"}, Stream{Name: "bar"}),
-				}),
+				}, exemplar.AlwaysOffFilter),
 			},
 		}
 
@@ -215,7 +233,7 @@ func TestLogConflictName(t *testing.T) {
 			return instID{Name: tc.existing}
 		})
 
-		i := newInserter[int64](newPipeline(nil, nil, nil), &vc)
+		i := newInserter[int64](newPipeline(nil, nil, nil, exemplar.AlwaysOffFilter), &vc)
 		i.logConflict(instID{Name: tc.name})
 
 		if tc.conflict {
@@ -226,7 +244,7 @@ func TestLogConflictName(t *testing.T) {
 			)
 		} else {
 			assert.Equalf(
-				t, msg, "",
+				t, "", msg,
 				"warning logged for non-conflicting names: %s, %s",
 				tc.existing, tc.name,
 			)
@@ -257,7 +275,7 @@ func TestLogConflictSuggestView(t *testing.T) {
 	var vc cache[string, instID]
 	name := strings.ToLower(orig.Name)
 	_ = vc.Lookup(name, func() instID { return orig })
-	i := newInserter[int64](newPipeline(nil, nil, nil), &vc)
+	i := newInserter[int64](newPipeline(nil, nil, nil, exemplar.AlwaysOffFilter), &vc)
 
 	viewSuggestion := func(inst instID, stream string) string {
 		return `"NewView(Instrument{` +
@@ -362,7 +380,7 @@ func TestInserterCachedAggregatorNameConflict(t *testing.T) {
 	}
 
 	var vc cache[string, instID]
-	pipe := newPipeline(nil, NewManualReader(), nil)
+	pipe := newPipeline(nil, NewManualReader(), nil, exemplar.AlwaysOffFilter)
 	i := newInserter[int64](pipe, &vc)
 
 	readerAggregation := i.readerDefaultAggregation(kind)
@@ -448,59 +466,150 @@ func TestExemplars(t *testing.T) {
 	})
 	sampled := trace.ContextWithSpanContext(context.Background(), sc)
 
-	t.Run("OTEL_GO_X_EXEMPLAR=true", func(t *testing.T) {
-		t.Setenv("OTEL_GO_X_EXEMPLAR", "true")
+	t.Run("Default", func(t *testing.T) {
+		m, r := setup("default")
+		measure(ctx, m)
+		check(t, r, 0, 0, 0)
 
-		t.Run("Default", func(t *testing.T) {
-			m, r := setup("default")
-			measure(ctx, m)
-			check(t, r, 0, 0, 0)
-
-			measure(sampled, m)
-			check(t, r, nCPU, 1, 20)
-		})
-
-		t.Run("Invalid", func(t *testing.T) {
-			t.Setenv("OTEL_METRICS_EXEMPLAR_FILTER", "unrecognized")
-			m, r := setup("default")
-			measure(ctx, m)
-			check(t, r, 0, 0, 0)
-
-			measure(sampled, m)
-			check(t, r, nCPU, 1, 20)
-		})
-
-		t.Run("always_on", func(t *testing.T) {
-			t.Setenv("OTEL_METRICS_EXEMPLAR_FILTER", "always_on")
-			m, r := setup("always_on")
-			measure(ctx, m)
-			check(t, r, nCPU, 1, 20)
-		})
-
-		t.Run("always_off", func(t *testing.T) {
-			t.Setenv("OTEL_METRICS_EXEMPLAR_FILTER", "always_off")
-			m, r := setup("always_off")
-			measure(ctx, m)
-			check(t, r, 0, 0, 0)
-		})
-
-		t.Run("trace_based", func(t *testing.T) {
-			t.Setenv("OTEL_METRICS_EXEMPLAR_FILTER", "trace_based")
-			m, r := setup("trace_based")
-			measure(ctx, m)
-			check(t, r, 0, 0, 0)
-
-			measure(sampled, m)
-			check(t, r, nCPU, 1, 20)
-		})
+		measure(sampled, m)
+		check(t, r, nCPU, 1, 20)
 	})
 
-	t.Run("OTEL_GO_X_EXEMPLAR=false", func(t *testing.T) {
-		t.Setenv("OTEL_GO_X_EXEMPLAR", "false")
+	t.Run("Invalid", func(t *testing.T) {
+		t.Setenv("OTEL_METRICS_EXEMPLAR_FILTER", "unrecognized")
+		m, r := setup("default")
+		measure(ctx, m)
+		check(t, r, 0, 0, 0)
 
+		measure(sampled, m)
+		check(t, r, nCPU, 1, 20)
+	})
+
+	t.Run("always_on", func(t *testing.T) {
 		t.Setenv("OTEL_METRICS_EXEMPLAR_FILTER", "always_on")
 		m, r := setup("always_on")
 		measure(ctx, m)
+		check(t, r, nCPU, 1, 20)
+	})
+
+	t.Run("always_off", func(t *testing.T) {
+		t.Setenv("OTEL_METRICS_EXEMPLAR_FILTER", "always_off")
+		m, r := setup("always_off")
+		measure(ctx, m)
 		check(t, r, 0, 0, 0)
 	})
+
+	t.Run("trace_based", func(t *testing.T) {
+		t.Setenv("OTEL_METRICS_EXEMPLAR_FILTER", "trace_based")
+		m, r := setup("trace_based")
+		measure(ctx, m)
+		check(t, r, 0, 0, 0)
+
+		measure(sampled, m)
+		check(t, r, nCPU, 1, 20)
+	})
+
+	t.Run("Custom reservoir", func(t *testing.T) {
+		r := NewManualReader()
+		reservoirProviderSelector := func(agg Aggregation) exemplar.ReservoirProvider {
+			return exemplar.FixedSizeReservoirProvider(2)
+		}
+		v1 := NewView(Instrument{Name: "int64-expo-histogram"}, Stream{
+			Aggregation: AggregationBase2ExponentialHistogram{
+				MaxSize:  160, // > 20, reservoir size should default to 20.
+				MaxScale: 20,
+			},
+			ExemplarReservoirProviderSelector: reservoirProviderSelector,
+		})
+		v2 := NewView(Instrument{Name: "int64-counter"}, Stream{
+			ExemplarReservoirProviderSelector: reservoirProviderSelector,
+		})
+		v3 := NewView(Instrument{Name: "int64-histogram"}, Stream{
+			ExemplarReservoirProviderSelector: reservoirProviderSelector,
+		})
+		m := NewMeterProvider(WithReader(r), WithView(v1, v2, v3)).Meter("custom-reservoir")
+		measure(ctx, m)
+		check(t, r, 0, 0, 0)
+
+		measure(sampled, m)
+		check(t, r, 2, 2, 2)
+	})
+}
+
+func TestAddingAndObservingMeasureConcurrentSafe(t *testing.T) {
+	r1 := NewManualReader()
+	r2 := NewManualReader()
+
+	mp := NewMeterProvider(WithReader(r1), WithReader(r2))
+	m := mp.Meter("test")
+
+	oc1, err := m.Int64ObservableCounter("int64-observable-counter")
+	require.NoError(t, err)
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, err := m.Int64ObservableCounter("int64-observable-counter-2")
+		require.NoError(t, err)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, err := m.RegisterCallback(
+			func(_ context.Context, o metric.Observer) error {
+				o.ObserveInt64(oc1, 2)
+				return nil
+			}, oc1)
+		require.NoError(t, err)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = mp.pipes[0].produce(context.Background(), &metricdata.ResourceMetrics{})
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = mp.pipes[1].produce(context.Background(), &metricdata.ResourceMetrics{})
+	}()
+
+	wg.Wait()
+}
+
+func TestPipelineWithMultipleReaders(t *testing.T) {
+	r1 := NewManualReader()
+	r2 := NewManualReader()
+	mp := NewMeterProvider(WithReader(r1), WithReader(r2))
+	m := mp.Meter("test")
+	var val atomic.Int64
+	oc, err := m.Int64ObservableCounter("int64-observable-counter")
+	require.NoError(t, err)
+	reg, err := m.RegisterCallback(
+		// SDK calls this function when collecting data.
+		func(_ context.Context, o metric.Observer) error {
+			o.ObserveInt64(oc, val.Load())
+			return nil
+		}, oc)
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, reg.Unregister()) })
+	ctx := context.Background()
+	rm := new(metricdata.ResourceMetrics)
+	val.Add(1)
+	err = r1.Collect(ctx, rm)
+	require.NoError(t, err)
+	if assert.Len(t, rm.ScopeMetrics, 1) &&
+		assert.Len(t, rm.ScopeMetrics[0].Metrics, 1) {
+		assert.Equal(t, int64(1), rm.ScopeMetrics[0].Metrics[0].Data.(metricdata.Sum[int64]).DataPoints[0].Value)
+	}
+	val.Add(1)
+	err = r2.Collect(ctx, rm)
+	require.NoError(t, err)
+	if assert.Len(t, rm.ScopeMetrics, 1) &&
+		assert.Len(t, rm.ScopeMetrics[0].Metrics, 1) {
+		assert.Equal(t, int64(2), rm.ScopeMetrics[0].Metrics[0].Data.(metricdata.Sum[int64]).DataPoints[0].Value)
+	}
 }

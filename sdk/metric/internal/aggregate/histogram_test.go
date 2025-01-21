@@ -80,8 +80,8 @@ func testDeltaHist[N int64 | float64](c conf[N]) func(t *testing.T) {
 				agg: metricdata.Histogram[N]{
 					Temporality: metricdata.DeltaTemporality,
 					DataPoints: []metricdata.HistogramDataPoint[N]{
-						c.hPt(fltrAlice, 2, 3, y2kPlus(1), y2kPlus(7)),
-						c.hPt(fltrBob, 10, 2, y2kPlus(1), y2kPlus(7)),
+						c.hPt(fltrAlice, 2, 3, y2kPlus(1), y2kPlus(2)),
+						c.hPt(fltrBob, 10, 2, y2kPlus(1), y2kPlus(2)),
 					},
 				},
 			},
@@ -96,8 +96,8 @@ func testDeltaHist[N int64 | float64](c conf[N]) func(t *testing.T) {
 				agg: metricdata.Histogram[N]{
 					Temporality: metricdata.DeltaTemporality,
 					DataPoints: []metricdata.HistogramDataPoint[N]{
-						c.hPt(fltrAlice, 10, 1, y2kPlus(7), y2kPlus(10)),
-						c.hPt(fltrBob, 3, 1, y2kPlus(7), y2kPlus(10)),
+						c.hPt(fltrAlice, 10, 1, y2kPlus(2), y2kPlus(3)),
+						c.hPt(fltrBob, 3, 1, y2kPlus(2), y2kPlus(3)),
 					},
 				},
 			},
@@ -126,9 +126,9 @@ func testDeltaHist[N int64 | float64](c conf[N]) func(t *testing.T) {
 				agg: metricdata.Histogram[N]{
 					Temporality: metricdata.DeltaTemporality,
 					DataPoints: []metricdata.HistogramDataPoint[N]{
-						c.hPt(fltrAlice, 1, 1, y2kPlus(11), y2kPlus(16)),
-						c.hPt(fltrBob, 1, 1, y2kPlus(11), y2kPlus(16)),
-						c.hPt(overflowSet, 1, 2, y2kPlus(11), y2kPlus(16)),
+						c.hPt(fltrAlice, 1, 1, y2kPlus(4), y2kPlus(5)),
+						c.hPt(fltrBob, 1, 1, y2kPlus(4), y2kPlus(5)),
+						c.hPt(overflowSet, 1, 2, y2kPlus(4), y2kPlus(5)),
 					},
 				},
 			},
@@ -167,8 +167,8 @@ func testCumulativeHist[N int64 | float64](c conf[N]) func(t *testing.T) {
 				agg: metricdata.Histogram[N]{
 					Temporality: metricdata.CumulativeTemporality,
 					DataPoints: []metricdata.HistogramDataPoint[N]{
-						c.hPt(fltrAlice, 2, 3, y2kPlus(0), y2kPlus(7)),
-						c.hPt(fltrBob, 10, 2, y2kPlus(0), y2kPlus(7)),
+						c.hPt(fltrAlice, 2, 3, y2kPlus(0), y2kPlus(2)),
+						c.hPt(fltrBob, 10, 2, y2kPlus(0), y2kPlus(2)),
 					},
 				},
 			},
@@ -183,8 +183,8 @@ func testCumulativeHist[N int64 | float64](c conf[N]) func(t *testing.T) {
 				agg: metricdata.Histogram[N]{
 					Temporality: metricdata.CumulativeTemporality,
 					DataPoints: []metricdata.HistogramDataPoint[N]{
-						c.hPt(fltrAlice, 2, 4, y2kPlus(0), y2kPlus(10)),
-						c.hPt(fltrBob, 10, 3, y2kPlus(0), y2kPlus(10)),
+						c.hPt(fltrAlice, 2, 4, y2kPlus(0), y2kPlus(3)),
+						c.hPt(fltrBob, 10, 3, y2kPlus(0), y2kPlus(3)),
 					},
 				},
 			},
@@ -196,8 +196,8 @@ func testCumulativeHist[N int64 | float64](c conf[N]) func(t *testing.T) {
 				agg: metricdata.Histogram[N]{
 					Temporality: metricdata.CumulativeTemporality,
 					DataPoints: []metricdata.HistogramDataPoint[N]{
-						c.hPt(fltrAlice, 2, 4, y2kPlus(0), y2kPlus(11)),
-						c.hPt(fltrBob, 10, 3, y2kPlus(0), y2kPlus(11)),
+						c.hPt(fltrAlice, 2, 4, y2kPlus(0), y2kPlus(4)),
+						c.hPt(fltrBob, 10, 3, y2kPlus(0), y2kPlus(4)),
 					},
 				},
 			},
@@ -213,9 +213,9 @@ func testCumulativeHist[N int64 | float64](c conf[N]) func(t *testing.T) {
 				agg: metricdata.Histogram[N]{
 					Temporality: metricdata.CumulativeTemporality,
 					DataPoints: []metricdata.HistogramDataPoint[N]{
-						c.hPt(fltrAlice, 2, 4, y2kPlus(0), y2kPlus(14)),
-						c.hPt(fltrBob, 10, 3, y2kPlus(0), y2kPlus(14)),
-						c.hPt(overflowSet, 1, 2, y2kPlus(0), y2kPlus(14)),
+						c.hPt(fltrAlice, 2, 4, y2kPlus(0), y2kPlus(5)),
+						c.hPt(fltrBob, 10, 3, y2kPlus(0), y2kPlus(5)),
+						c.hPt(overflowSet, 1, 2, y2kPlus(0), y2kPlus(5)),
 					},
 				},
 			},
@@ -268,12 +268,12 @@ func TestBucketsBin(t *testing.T) {
 func testBucketsBin[N int64 | float64]() func(t *testing.T) {
 	return func(t *testing.T) {
 		b := newBuckets[N](alice, 3)
-		assertB := func(counts []uint64, count uint64, min, max N) {
+		assertB := func(counts []uint64, count uint64, mi, ma N) {
 			t.Helper()
 			assert.Equal(t, counts, b.counts)
 			assert.Equal(t, count, b.count)
-			assert.Equal(t, min, b.min)
-			assert.Equal(t, max, b.max)
+			assert.Equal(t, mi, b.min)
+			assert.Equal(t, ma, b.max)
 		}
 
 		assertB([]uint64{0, 0, 0}, 0, 0, 0)
@@ -326,7 +326,7 @@ func TestHistogramImmutableBounds(t *testing.T) {
 	assert.Equal(t, cpB, h.bounds, "modifying the Aggregation bounds should not change the bounds")
 }
 
-func TestCumulativeHistogramImutableCounts(t *testing.T) {
+func TestCumulativeHistogramImmutableCounts(t *testing.T) {
 	h := newHistogram[int64](bounds, noMinMax, false, 0, dropExemplars[int64])
 	h.measure(context.Background(), 5, alice, nil)
 
@@ -351,7 +351,7 @@ func TestDeltaHistogramReset(t *testing.T) {
 
 	var data metricdata.Aggregation = metricdata.Histogram[int64]{}
 	require.Equal(t, 0, h.delta(&data))
-	require.Len(t, data.(metricdata.Histogram[int64]).DataPoints, 0)
+	require.Empty(t, data.(metricdata.Histogram[int64]).DataPoints)
 
 	h.measure(context.Background(), 1, alice, nil)
 
@@ -363,7 +363,7 @@ func TestDeltaHistogramReset(t *testing.T) {
 	// The attr set should be forgotten once Aggregations is called.
 	expect.DataPoints = nil
 	assert.Equal(t, 0, h.delta(&data))
-	assert.Len(t, data.(metricdata.Histogram[int64]).DataPoints, 0)
+	assert.Empty(t, data.(metricdata.Histogram[int64]).DataPoints)
 
 	// Aggregating another set should not affect the original (alice).
 	h.measure(context.Background(), 1, bob, nil)

@@ -11,6 +11,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"go.opentelemetry.io/auto/sdk"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/embedded"
 	"go.opentelemetry.io/otel/trace/noop"
@@ -217,7 +219,7 @@ func TestTraceProviderDelegatesSameInstance(t *testing.T) {
 		},
 	})
 
-	assert.NotSame(t, tracer, gtp.Tracer("abc", trace.WithInstrumentationVersion("xyz")))
+	assert.NotEqual(t, tracer, gtp.Tracer("abc", trace.WithInstrumentationVersion("xyz")))
 }
 
 func TestSpanContextPropagatedWithNonRecordingSpan(t *testing.T) {
@@ -237,17 +239,18 @@ func TestSpanContextPropagatedWithNonRecordingSpan(t *testing.T) {
 }
 
 func TestTracerIdentity(t *testing.T) {
-	type id struct{ name, ver, url string }
+	type id struct{ name, ver, url, attr string }
 
 	ids := []id{
-		{"name-a", "version-a", "url-a"},
-		{"name-a", "version-a", "url-b"},
-		{"name-a", "version-b", "url-a"},
-		{"name-a", "version-b", "url-b"},
-		{"name-b", "version-a", "url-a"},
-		{"name-b", "version-a", "url-b"},
-		{"name-b", "version-b", "url-a"},
-		{"name-b", "version-b", "url-b"},
+		{"name-a", "version-a", "url-a", ""},
+		{"name-a", "version-a", "url-a", "attr"},
+		{"name-a", "version-a", "url-b", ""},
+		{"name-a", "version-b", "url-a", ""},
+		{"name-a", "version-b", "url-b", ""},
+		{"name-b", "version-a", "url-a", ""},
+		{"name-b", "version-a", "url-b", ""},
+		{"name-b", "version-b", "url-a", ""},
+		{"name-b", "version-b", "url-b", ""},
 	}
 
 	provider := &tracerProvider{}
@@ -256,6 +259,7 @@ func TestTracerIdentity(t *testing.T) {
 			i.name,
 			trace.WithInstrumentationVersion(i.ver),
 			trace.WithSchemaURL(i.url),
+			trace.WithInstrumentationAttributes(attribute.String("key", i.attr)),
 		)
 	}
 
@@ -270,4 +274,20 @@ func TestTracerIdentity(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestNewSpanType(t *testing.T) {
+	tracer := new(tracer)
+	ctx := context.Background()
+	_, got := tracer.newSpan(ctx, autoInstEnabled, "", nil)
+	assert.IsType(t, nonRecordingSpan{}, got, "default span type")
+
+	orig := *autoInstEnabled
+	*autoInstEnabled = true
+	t.Cleanup(func() { *autoInstEnabled = orig })
+
+	_, got = tracer.newSpan(ctx, autoInstEnabled, "", nil)
+	autoTracer := sdk.TracerProvider().Tracer("")
+	_, span := autoTracer.Start(ctx, "")
+	assert.IsType(t, span, got, "auto span type")
 }

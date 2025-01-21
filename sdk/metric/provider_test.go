@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	api "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -95,6 +96,7 @@ func TestMeterProviderReturnsSameMeter(t *testing.T) {
 
 	assert.Same(t, mtr, mp.Meter(""))
 	assert.NotSame(t, mtr, mp.Meter("diff"))
+	assert.NotSame(t, mtr, mp.Meter("", api.WithInstrumentationAttributes(attribute.String("k", "v"))))
 }
 
 func TestEmptyMeterName(t *testing.T) {
@@ -167,8 +169,8 @@ func TestMeterProviderMixingOnRegisterErrors(t *testing.T) {
 
 	err = rdr1.Collect(context.Background(), &data)
 	assert.NoError(t, err, "Errored when collect should be a noop")
-	assert.Len(
-		t, data.ScopeMetrics, 0,
+	assert.Empty(
+		t, data.ScopeMetrics,
 		"Metrics produced for instrument collected by different MeterProvider",
 	)
 }

@@ -17,7 +17,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/instrumentation"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
-	semconv "go.opentelemetry.io/otel/semconv/v1.25.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	cpb "go.opentelemetry.io/proto/otlp/common/v1"
 	mpb "go.opentelemetry.io/proto/otlp/metrics/v1"
 	rpb "go.opentelemetry.io/proto/otlp/resource/v1"
@@ -805,9 +805,10 @@ var (
 	otelScopeMetrics = []metricdata.ScopeMetrics{
 		{
 			Scope: instrumentation.Scope{
-				Name:      "test/code/path",
-				Version:   "v0.1.0",
-				SchemaURL: semconv.SchemaURL,
+				Name:       "test/code/path",
+				Version:    "v0.1.0",
+				SchemaURL:  semconv.SchemaURL,
+				Attributes: attribute.NewSet(attribute.String("foo", "bar")),
 			},
 			Metrics: otelMetrics,
 		},
@@ -818,6 +819,14 @@ var (
 			Scope: &cpb.InstrumentationScope{
 				Name:    "test/code/path",
 				Version: "v0.1.0",
+				Attributes: []*cpb.KeyValue{
+					{
+						Key: "foo",
+						Value: &cpb.AnyValue{
+							Value: &cpb.AnyValue_StringValue{StringValue: "bar"},
+						},
+					},
+				},
 			},
 			Metrics:   pbMetrics,
 			SchemaUrl: semconv.SchemaURL,
@@ -928,4 +937,94 @@ func TestTransformations(t *testing.T) {
 	assert.ErrorIs(t, err, errUnknownTemporality)
 	assert.ErrorIs(t, err, errUnknownAggregation)
 	require.Equal(t, pbResourceMetrics, rm)
+}
+
+func BenchmarkResourceMetrics(b *testing.B) {
+	for _, bb := range []struct {
+		name        string
+		aggregation metricdata.Aggregation
+	}{
+		{
+			name: "with a gauge",
+			aggregation: metricdata.Gauge[int64]{
+				DataPoints: []metricdata.DataPoint[int64]{
+					{Value: 1},
+					{Value: 2},
+				},
+			},
+		},
+		{
+			name: "with a sum",
+			aggregation: metricdata.Sum[int64]{
+				DataPoints: []metricdata.DataPoint[int64]{
+					{Value: 1},
+					{Value: 2},
+				},
+			},
+		},
+		{
+			name: "with a histogram",
+			aggregation: metricdata.Histogram[int64]{
+				DataPoints: []metricdata.HistogramDataPoint[int64]{
+					{
+						Count: 2,
+						Min:   metricdata.NewExtrema[int64](2),
+						Max:   metricdata.NewExtrema[int64](3),
+						Sum:   5,
+					},
+				},
+			},
+		},
+		{
+			name: "with an exponential histogram",
+			aggregation: metricdata.ExponentialHistogram[int64]{
+				DataPoints: []metricdata.ExponentialHistogramDataPoint[int64]{
+					{
+						Count: 2,
+						Min:   metricdata.NewExtrema[int64](2),
+						Max:   metricdata.NewExtrema[int64](3),
+						Sum:   5,
+					},
+				},
+			},
+		},
+		{
+			name: "with a summary",
+			aggregation: metricdata.Summary{
+				DataPoints: []metricdata.SummaryDataPoint{
+					{
+						Count: 1,
+						Sum:   5,
+						QuantileValues: []metricdata.QuantileValue{
+							{Quantile: 0.5, Value: 5},
+						},
+					},
+				},
+			},
+		},
+	} {
+		b.Run(bb.name, func(b *testing.B) {
+			records := &metricdata.ResourceMetrics{
+				ScopeMetrics: []metricdata.ScopeMetrics{
+					{
+						Metrics: []metricdata.Metrics{
+							{
+								Data: bb.aggregation,
+							},
+						},
+					},
+				},
+			}
+
+			b.ResetTimer()
+			b.ReportAllocs()
+			b.RunParallel(func(pb *testing.PB) {
+				var out *mpb.ResourceMetrics
+				for pb.Next() {
+					out, _ = ResourceMetrics(records)
+				}
+				_ = out
+			})
+		})
+	}
 }

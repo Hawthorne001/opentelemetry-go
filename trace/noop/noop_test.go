@@ -68,9 +68,9 @@ func assertAllExportedMethodNoPanic(rVal reflect.Value, rType reflect.Type) func
 
 func TestNewTracerProvider(t *testing.T) {
 	tp := NewTracerProvider()
-	assert.Equal(t, tp, TracerProvider{})
+	assert.Equal(t, TracerProvider{}, tp)
 	tracer := tp.Tracer("")
-	assert.Equal(t, tracer, Tracer{})
+	assert.Equal(t, Tracer{}, tracer)
 }
 
 func TestTracerStartPropagatesSpanContext(t *testing.T) {
@@ -99,6 +99,19 @@ func TestTracerStartPropagatesSpanContext(t *testing.T) {
 	assert.IsType(t, Span{}, span, "non-noop span returned")
 	assert.Equal(t, spanCtx, span.SpanContext(), "recording span's span context not returned from span")
 	assert.False(t, span.IsRecording(), "recording span returned")
+}
+
+func BenchmarkNoopInstance(b *testing.B) {
+	tracer := NewTracerProvider().Tracer("")
+	ctx := trace.ContextWithSpanContext(context.Background(), trace.SpanContext{})
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, span := tracer.Start(ctx, "")
+		span.End()
+	}
 }
 
 type recordingSpan struct{ Span }

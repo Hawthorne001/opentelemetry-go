@@ -23,6 +23,8 @@ import (
 	"go.opentelemetry.io/otel/internal/global"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/sdk/instrumentation"
+	"go.opentelemetry.io/otel/sdk/metric/exemplar"
+	"go.opentelemetry.io/otel/sdk/metric/internal/x"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata/metricdatatest"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -387,6 +389,9 @@ func TestMeterCreatesInstruments(t *testing.T) {
 				ctr, err := m.Int64Counter("sint")
 				assert.NoError(t, err)
 
+				c, ok := ctr.(x.EnabledInstrument)
+				require.True(t, ok)
+				assert.True(t, c.Enabled(context.Background()))
 				ctr.Add(ctx, 3)
 			},
 			want: metricdata.Metrics{
@@ -406,6 +411,9 @@ func TestMeterCreatesInstruments(t *testing.T) {
 				ctr, err := m.Int64UpDownCounter("sint")
 				assert.NoError(t, err)
 
+				c, ok := ctr.(x.EnabledInstrument)
+				require.True(t, ok)
+				assert.True(t, c.Enabled(context.Background()))
 				ctr.Add(ctx, 11)
 			},
 			want: metricdata.Metrics{
@@ -422,10 +430,10 @@ func TestMeterCreatesInstruments(t *testing.T) {
 		{
 			name: "SyncInt64Histogram",
 			fn: func(t *testing.T, m metric.Meter) {
-				gauge, err := m.Int64Histogram("histogram")
+				histo, err := m.Int64Histogram("histogram")
 				assert.NoError(t, err)
 
-				gauge.Record(ctx, 7)
+				histo.Record(ctx, 7)
 			},
 			want: metricdata.Metrics{
 				Name: "histogram",
@@ -451,6 +459,9 @@ func TestMeterCreatesInstruments(t *testing.T) {
 				ctr, err := m.Float64Counter("sfloat")
 				assert.NoError(t, err)
 
+				c, ok := ctr.(x.EnabledInstrument)
+				require.True(t, ok)
+				assert.True(t, c.Enabled(context.Background()))
 				ctr.Add(ctx, 3)
 			},
 			want: metricdata.Metrics{
@@ -470,6 +481,9 @@ func TestMeterCreatesInstruments(t *testing.T) {
 				ctr, err := m.Float64UpDownCounter("sfloat")
 				assert.NoError(t, err)
 
+				c, ok := ctr.(x.EnabledInstrument)
+				require.True(t, ok)
+				assert.True(t, c.Enabled(context.Background()))
 				ctr.Add(ctx, 11)
 			},
 			want: metricdata.Metrics{
@@ -486,10 +500,10 @@ func TestMeterCreatesInstruments(t *testing.T) {
 		{
 			name: "SyncFloat64Histogram",
 			fn: func(t *testing.T, m metric.Meter) {
-				gauge, err := m.Float64Histogram("histogram")
+				histo, err := m.Float64Histogram("histogram")
 				assert.NoError(t, err)
 
-				gauge.Record(ctx, 7)
+				histo.Record(ctx, 7)
 			},
 			want: metricdata.Metrics{
 				Name: "histogram",
@@ -527,6 +541,78 @@ func TestMeterCreatesInstruments(t *testing.T) {
 			require.Len(t, sm.Metrics, 1)
 			got := sm.Metrics[0]
 			metricdatatest.AssertEqual(t, tt.want, got, metricdatatest.IgnoreTimestamp())
+		})
+	}
+}
+
+func TestMeterWithDropView(t *testing.T) {
+	dropView := NewView(
+		Instrument{Name: "*"},
+		Stream{Aggregation: AggregationDrop{}},
+	)
+	m := NewMeterProvider(WithView(dropView)).Meter(t.Name())
+
+	testCases := []struct {
+		name string
+		fn   func(*testing.T) (any, error)
+	}{
+		{
+			name: "Int64Counter",
+			fn: func(*testing.T) (any, error) {
+				return m.Int64Counter("sint")
+			},
+		},
+		{
+			name: "Int64UpDownCounter",
+			fn: func(*testing.T) (any, error) {
+				return m.Int64UpDownCounter("sint")
+			},
+		},
+		{
+			name: "Int64Gauge",
+			fn: func(*testing.T) (any, error) {
+				return m.Int64Gauge("sint")
+			},
+		},
+		{
+			name: "Int64Histogram",
+			fn: func(*testing.T) (any, error) {
+				return m.Int64Histogram("histogram")
+			},
+		},
+		{
+			name: "Float64Counter",
+			fn: func(*testing.T) (any, error) {
+				return m.Float64Counter("sfloat")
+			},
+		},
+		{
+			name: "Float64UpDownCounter",
+			fn: func(*testing.T) (any, error) {
+				return m.Float64UpDownCounter("sfloat")
+			},
+		},
+		{
+			name: "Float64Gauge",
+			fn: func(*testing.T) (any, error) {
+				return m.Float64Gauge("sfloat")
+			},
+		},
+		{
+			name: "Float64Histogram",
+			fn: func(*testing.T) (any, error) {
+				return m.Float64Histogram("histogram")
+			},
+		},
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.fn(t)
+			require.NoError(t, err)
+			c, ok := got.(x.EnabledInstrument)
+			require.True(t, ok)
+			assert.False(t, c.Enabled(context.Background()))
 		})
 	}
 }
@@ -806,7 +892,7 @@ func TestMeterCreatesInstrumentsValidations(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			m := NewMeterProvider().Meter("testInstruments")
 			err := tt.fn(t, m)
-			assert.Equal(t, err, tt.wantErr)
+			assert.Equal(t, tt.wantErr, err)
 		})
 	}
 }
@@ -1041,7 +1127,7 @@ func TestGlobalInstRegisterCallback(t *testing.T) {
 	got := metricdata.ResourceMetrics{}
 	err = rdr.Collect(context.Background(), &got)
 	assert.NoError(t, err)
-	assert.Lenf(t, l.messages, 0, "Warnings and errors logged:\n%s", l)
+	assert.Emptyf(t, l.messages, "Warnings and errors logged:\n%s", l)
 	metricdatatest.AssertEqual(t, metricdata.ResourceMetrics{
 		ScopeMetrics: []metricdata.ScopeMetrics{
 			{
@@ -1171,13 +1257,13 @@ func TestUnregisterUnregisters(t *testing.T) {
 	int64Gauge, err := m.Int64ObservableGauge("int64.gauge")
 	require.NoError(t, err)
 
-	floag64Counter, err := m.Float64ObservableCounter("floag64.counter")
+	float64Counter, err := m.Float64ObservableCounter("float64.counter")
 	require.NoError(t, err)
 
-	floag64UpDownCounter, err := m.Float64ObservableUpDownCounter("floag64.up_down_counter")
+	float64UpDownCounter, err := m.Float64ObservableUpDownCounter("float64.up_down_counter")
 	require.NoError(t, err)
 
-	floag64Gauge, err := m.Float64ObservableGauge("floag64.gauge")
+	float64Gauge, err := m.Float64ObservableGauge("float64.gauge")
 	require.NoError(t, err)
 
 	var called bool
@@ -1189,9 +1275,9 @@ func TestUnregisterUnregisters(t *testing.T) {
 		int64Counter,
 		int64UpDownCounter,
 		int64Gauge,
-		floag64Counter,
-		floag64UpDownCounter,
-		floag64Gauge,
+		float64Counter,
+		float64UpDownCounter,
+		float64Gauge,
 	)
 	require.NoError(t, err)
 
@@ -1225,13 +1311,13 @@ func TestRegisterCallbackDropAggregations(t *testing.T) {
 	int64Gauge, err := m.Int64ObservableGauge("int64.gauge")
 	require.NoError(t, err)
 
-	floag64Counter, err := m.Float64ObservableCounter("floag64.counter")
+	float64Counter, err := m.Float64ObservableCounter("float64.counter")
 	require.NoError(t, err)
 
-	floag64UpDownCounter, err := m.Float64ObservableUpDownCounter("floag64.up_down_counter")
+	float64UpDownCounter, err := m.Float64ObservableUpDownCounter("float64.up_down_counter")
 	require.NoError(t, err)
 
-	floag64Gauge, err := m.Float64ObservableGauge("floag64.gauge")
+	float64Gauge, err := m.Float64ObservableGauge("float64.gauge")
 	require.NoError(t, err)
 
 	var called bool
@@ -1243,9 +1329,9 @@ func TestRegisterCallbackDropAggregations(t *testing.T) {
 		int64Counter,
 		int64UpDownCounter,
 		int64Gauge,
-		floag64Counter,
-		floag64UpDownCounter,
-		floag64Gauge,
+		float64Counter,
+		float64UpDownCounter,
+		float64Gauge,
 	)
 	require.NoError(t, err)
 
@@ -1254,7 +1340,7 @@ func TestRegisterCallbackDropAggregations(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.False(t, called, "callback called for all drop instruments")
-	assert.Len(t, data.ScopeMetrics, 0, "metrics exported for drop instruments")
+	assert.Empty(t, data.ScopeMetrics, "metrics exported for drop instruments")
 }
 
 func TestAttributeFilter(t *testing.T) {
@@ -2304,7 +2390,7 @@ func TestObservableDropAggregation(t *testing.T) {
 			require.NoError(t, err)
 
 			if len(tt.wantObservables) == 0 {
-				require.Len(t, rm.ScopeMetrics, 0)
+				require.Empty(t, rm.ScopeMetrics)
 				return
 			}
 
@@ -2426,4 +2512,89 @@ func TestDuplicateInstrumentCreation(t *testing.T) {
 			require.Equal(t, 1, numInstruments)
 		})
 	}
+}
+
+func TestMeterProviderDelegation(t *testing.T) {
+	meter := otel.Meter("go.opentelemetry.io/otel/metric/internal/global/meter_test")
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) { require.NoError(t, err) }))
+	for i := 0; i < 5; i++ {
+		int64Counter, err := meter.Int64ObservableCounter("observable.int64.counter")
+		require.NoError(t, err)
+		int64UpDownCounter, err := meter.Int64ObservableUpDownCounter("observable.int64.up.down.counter")
+		require.NoError(t, err)
+		int64Gauge, err := meter.Int64ObservableGauge("observable.int64.gauge")
+		require.NoError(t, err)
+		floatCounter, err := meter.Float64ObservableCounter("observable.float.counter")
+		require.NoError(t, err)
+		floatUpDownCounter, err := meter.Float64ObservableUpDownCounter("observable.float.up.down.counter")
+		require.NoError(t, err)
+		floatGauge, err := meter.Float64ObservableGauge("observable.float.gauge")
+		require.NoError(t, err)
+		_, err = meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
+			o.ObserveInt64(int64Counter, int64(10))
+			o.ObserveInt64(int64UpDownCounter, int64(10))
+			o.ObserveInt64(int64Gauge, int64(10))
+
+			o.ObserveFloat64(floatCounter, float64(10))
+			o.ObserveFloat64(floatUpDownCounter, float64(10))
+			o.ObserveFloat64(floatGauge, float64(10))
+			return nil
+		}, int64Counter, int64UpDownCounter, int64Gauge, floatCounter, floatUpDownCounter, floatGauge)
+		require.NoError(t, err)
+	}
+	provider := NewMeterProvider()
+
+	assert.NotPanics(t, func() {
+		otel.SetMeterProvider(provider)
+	})
+}
+
+func TestExemplarFilter(t *testing.T) {
+	rdr := NewManualReader()
+	mp := NewMeterProvider(
+		WithReader(rdr),
+		// Passing AlwaysOnFilter causes collection of the exemplar for the
+		// counter increment below.
+		WithExemplarFilter(exemplar.AlwaysOnFilter),
+	)
+
+	m1 := mp.Meter("scope")
+	ctr1, err := m1.Float64Counter("ctr")
+	assert.NoError(t, err)
+	ctr1.Add(context.Background(), 1.0)
+
+	want := metricdata.ResourceMetrics{
+		Resource: resource.Default(),
+		ScopeMetrics: []metricdata.ScopeMetrics{
+			{
+				Scope: instrumentation.Scope{
+					Name: "scope",
+				},
+				Metrics: []metricdata.Metrics{
+					{
+						Name: "ctr",
+						Data: metricdata.Sum[float64]{
+							Temporality: metricdata.CumulativeTemporality,
+							IsMonotonic: true,
+							DataPoints: []metricdata.DataPoint[float64]{
+								{
+									Value: 1.0,
+									Exemplars: []metricdata.Exemplar[float64]{
+										{
+											Value: 1.0,
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	got := metricdata.ResourceMetrics{}
+	err = rdr.Collect(context.Background(), &got)
+	assert.NoError(t, err)
+	metricdatatest.AssertEqual(t, want, got, metricdatatest.IgnoreTimestamp())
 }

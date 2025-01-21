@@ -18,7 +18,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	tracesdk "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
-	semconv "go.opentelemetry.io/otel/semconv/v1.25.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
@@ -68,6 +68,7 @@ func TestEmptySpanEvent(t *testing.T) {
 func TestSpanEvent(t *testing.T) {
 	attrs := []attribute.KeyValue{attribute.Int("one", 1), attribute.Int("two", 2)}
 	eventTime := time.Date(2020, 5, 20, 0, 0, 0, 0, time.UTC)
+	negativeEventTime := time.Date(1969, 7, 20, 20, 17, 0, 0, time.UTC)
 	got := spanEvents([]tracesdk.Event{
 		{
 			Name:       "test 1",
@@ -80,14 +81,21 @@ func TestSpanEvent(t *testing.T) {
 			Time:                  eventTime,
 			DroppedAttributeCount: 2,
 		},
+		{
+			Name:                  "test 3",
+			Attributes:            attrs,
+			Time:                  negativeEventTime,
+			DroppedAttributeCount: 2,
+		},
 	})
-	if !assert.Len(t, got, 2) {
+	if !assert.Len(t, got, 3) {
 		return
 	}
 	eventTimestamp := uint64(1589932800 * 1e9)
 	assert.Equal(t, &tracepb.Span_Event{Name: "test 1", Attributes: nil, TimeUnixNano: eventTimestamp}, got[0])
 	// Do not test Attributes directly, just that the return value goes to the correct field.
 	assert.Equal(t, &tracepb.Span_Event{Name: "test 2", Attributes: KeyValues(attrs), TimeUnixNano: eventTimestamp, DroppedAttributesCount: 2}, got[1])
+	assert.Equal(t, &tracepb.Span_Event{Name: "test 3", Attributes: KeyValues(attrs), TimeUnixNano: 0, DroppedAttributesCount: 2}, got[2])
 }
 
 func TestNilLinks(t *testing.T) {
@@ -280,7 +288,7 @@ func TestSpanData(t *testing.T) {
 			attribute.Int64("rk2", 5),
 			attribute.StringSlice("rk3", []string{"sv1", "sv2"}),
 		),
-		InstrumentationLibrary: instrumentation.Scope{
+		InstrumentationScope: instrumentation.Scope{
 			Name:      "go.opentelemetry.io/test/otel",
 			Version:   "v0.0.1",
 			SchemaURL: semconv.SchemaURL,
@@ -316,8 +324,8 @@ func TestSpanData(t *testing.T) {
 	assert.Equal(t, got[0].SchemaUrl, spanData.Resource.SchemaURL())
 	scopeSpans := got[0].GetScopeSpans()
 	require.Len(t, scopeSpans, 1)
-	assert.Equal(t, scopeSpans[0].SchemaUrl, spanData.InstrumentationLibrary.SchemaURL)
-	assert.Equal(t, scopeSpans[0].GetScope(), InstrumentationScope(spanData.InstrumentationLibrary))
+	assert.Equal(t, scopeSpans[0].SchemaUrl, spanData.InstrumentationScope.SchemaURL)
+	assert.Equal(t, scopeSpans[0].GetScope(), InstrumentationScope(spanData.InstrumentationScope))
 	require.Len(t, scopeSpans[0].Spans, 1)
 	actualSpan := scopeSpans[0].Spans[0]
 
@@ -346,5 +354,35 @@ func TestSpanDataNilResource(t *testing.T) {
 		Spans(tracetest.SpanStubs{
 			{},
 		}.Snapshots())
+	})
+}
+
+func BenchmarkSpans(b *testing.B) {
+	records := []tracesdk.ReadOnlySpan{
+		tracetest.SpanStub{
+			Attributes: []attribute.KeyValue{
+				attribute.String("a", "b"),
+				attribute.String("b", "b"),
+				attribute.String("c", "b"),
+				attribute.String("d", "b"),
+			},
+			Links: []tracesdk.Link{
+				{},
+				{},
+				{},
+				{},
+				{},
+			},
+		}.Snapshot(),
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		var out []*tracepb.ResourceSpans
+		for pb.Next() {
+			out = Spans(records)
+		}
+		_ = out
 	})
 }

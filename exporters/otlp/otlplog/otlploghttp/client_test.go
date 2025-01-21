@@ -38,7 +38,7 @@ import (
 	rpb "go.opentelemetry.io/proto/otlp/resource/v1"
 
 	"go.opentelemetry.io/otel/sdk/log"
-	semconv "go.opentelemetry.io/otel/semconv/v1.25.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
 
 var (
@@ -224,7 +224,7 @@ type httpCollector struct {
 // default OTLP log endpoint path ("/v1/logs"). If the endpoint contains a
 // prefix of "https" the server will generate weak self-signed TLS certificates
 // and use them to server data. If the endpoint contains a path, that path will
-// be used instead of the default OTLP metri endpoint path.
+// be used instead of the default OTLP metric endpoint path.
 //
 // If errCh is not nil, the collector will respond to HTTP requests with errors
 // sent on that channel. This means that if errCh is not nil Export calls will
@@ -434,8 +434,8 @@ func newWeakCertificate() (tls.Certificate, error) {
 	}
 	notBefore := time.Now()
 	notAfter := notBefore.Add(time.Hour)
-	max := new(big.Int).Lsh(big.NewInt(1), 128)
-	sn, err := rand.Int(rand.Reader, max)
+	m := new(big.Int).Lsh(big.NewInt(1), 128)
+	sn, err := rand.Int(rand.Reader, m)
 	if err != nil {
 		return tls.Certificate{}, err
 	}
@@ -558,7 +558,7 @@ func TestClient(t *testing.T) {
 		require.NoError(t, client.UploadLogs(ctx, resourceLogs))
 		require.NoError(t, client.UploadLogs(ctx, resourceLogs))
 
-		require.Equal(t, 1, len(errs))
+		require.Len(t, errs, 1)
 		want := fmt.Sprintf("%s (%d log records rejected)", msg, n)
 		assert.ErrorContains(t, errs[0], want)
 	})
@@ -632,7 +632,7 @@ func TestConfig(t *testing.T) {
 		got := coll.Headers()
 		require.Regexp(t, "OTel Go OTLP over HTTP/protobuf logs exporter/[01]\\..*", got)
 		require.Contains(t, got, key)
-		assert.Equal(t, got[key], []string{headers[key]})
+		assert.Equal(t, []string{headers[key]}, got[key])
 	})
 
 	t.Run("WithTimeout", func(t *testing.T) {
@@ -697,7 +697,31 @@ func TestConfig(t *testing.T) {
 		t.Cleanup(func() { close(rCh) })
 		t.Cleanup(func() { require.NoError(t, exp.Shutdown(ctx)) })
 		assert.NoError(t, exp.Export(ctx, make([]log.Record, 1)), "failed retry")
-		assert.Len(t, rCh, 0, "failed HTTP responses did not occur")
+		assert.Empty(t, rCh, "failed HTTP responses did not occur")
+	})
+
+	t.Run("WithRetryAndExporterErr", func(t *testing.T) {
+		exporterErr := errors.New("rpc error: code = Unavailable desc = service.name not found in resource attributes")
+		rCh := make(chan exportResult, 1)
+		rCh <- exportResult{Err: &httpResponseError{
+			Status: http.StatusTooManyRequests,
+			Err:    exporterErr,
+		}}
+		exp, coll := factoryFunc("", rCh, WithRetry(RetryConfig{
+			Enabled: false,
+		}))
+		ctx := context.Background()
+		t.Cleanup(func() { require.NoError(t, coll.Shutdown(ctx)) })
+		// Push this after Shutdown so the HTTP server doesn't hang.
+		t.Cleanup(func() { close(rCh) })
+		t.Cleanup(func() { require.NoError(t, exp.Shutdown(ctx)) })
+		err := exp.Export(ctx, make([]log.Record, 1))
+		assert.ErrorContains(t, err, exporterErr.Error())
+
+		// To test the `Unwrap` and `As` function of retryable error
+		var retryErr *retryableError
+		assert.ErrorAs(t, err, &retryErr)
+		assert.ErrorIs(t, err, *retryErr)
 	})
 
 	t.Run("WithURLPath", func(t *testing.T) {
@@ -734,7 +758,7 @@ func TestConfig(t *testing.T) {
 
 		got := coll.Headers()
 		require.Contains(t, got, key)
-		assert.Equal(t, got[key], []string{headers[key]})
+		assert.Equal(t, []string{headers[key]}, got[key])
 	})
 
 	t.Run("WithProxy", func(t *testing.T) {
@@ -752,6 +776,26 @@ func TestConfig(t *testing.T) {
 
 		got := coll.Headers()
 		require.Contains(t, got, headerKeySetInProxy)
-		assert.Equal(t, got[headerKeySetInProxy], []string{headerValueSetInProxy})
+		assert.Equal(t, []string{headerValueSetInProxy}, got[headerKeySetInProxy])
+	})
+
+	t.Run("non-retryable errors are propagated", func(t *testing.T) {
+		exporterErr := errors.New("missing required attribute aaaa")
+		rCh := make(chan exportResult, 1)
+		rCh <- exportResult{Err: &httpResponseError{
+			Status: http.StatusBadRequest,
+			Err:    exporterErr,
+		}}
+
+		exp, coll := factoryFunc("", rCh, WithRetry(RetryConfig{
+			Enabled: false,
+		}))
+		ctx := context.Background()
+		t.Cleanup(func() { require.NoError(t, coll.Shutdown(ctx)) })
+		// Push this after Shutdown so the HTTP server doesn't hang.
+		t.Cleanup(func() { close(rCh) })
+		t.Cleanup(func() { require.NoError(t, exp.Shutdown(ctx)) })
+		err := exp.Export(ctx, make([]log.Record, 1))
+		assert.ErrorContains(t, err, exporterErr.Error())
 	})
 }
